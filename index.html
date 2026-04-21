@@ -9,7 +9,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        :root { --bg-dark: #0f0f12; --bg-card: #18181f; --bg-hover: #1f1f28; --border: #2a2a35; --text: #e5e5ea; --text-dim: #8888a0; --green: #22c55e; --red: #ef4444; --yellow: #eab308; --blue: #3b82f6; --purple: #a855f7; --orange: #f97316; }
+        :root { --bg-dark: #0f0f12; --bg-card: #18181f; --bg-hover: #1f1f28; --border: #2a2a35; --text: #e5e5ea; --text-dim: #8888a0; --green: #22c55e; --red: #ef4444; --yellow: #eab308; --blue: #3b82f6; --purple: #a855f7; --orange: #f97316; --cyan: #06b6d4; }
         body { font-family: 'Inter', sans-serif; background: var(--bg-dark); color: var(--text); margin: 0; }
         .mono { font-family: 'JetBrains Mono', monospace; }
         .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; }
@@ -20,6 +20,7 @@
         .badge-blue { background: rgba(59,130,246,0.15); color: var(--blue); }
         .badge-orange { background: rgba(249,115,22,0.15); color: var(--orange); }
         .badge-purple { background: rgba(168,85,247,0.15); color: var(--purple); }
+        .badge-cyan { background: rgba(6,182,212,0.15); color: var(--cyan); }
         input, select, textarea { background: var(--bg-hover); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 8px 12px; font-size: 13px; }
         input:focus, select:focus, textarea:focus { outline: none; border-color: var(--blue); }
         button { cursor: pointer; border: none; border-radius: 6px; font-weight: 600; font-size: 13px; transition: all 0.15s; }
@@ -44,6 +45,10 @@
         .stat-label { font-size: 11px; color: var(--text-dim); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
         .checkbox { width: 16px; height: 16px; cursor: pointer; accent-color: var(--blue); }
         .settings-input { width: 100px; padding: 6px 10px; font-size: 13px; text-align: right; }
+        .toggle { position: relative; width: 40px; height: 22px; background: var(--bg-hover); border-radius: 11px; cursor: pointer; transition: background 0.2s; border: 1px solid var(--border); }
+        .toggle.active { background: var(--blue); border-color: var(--blue); }
+        .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: white; border-radius: 50%; transition: transform 0.2s; }
+        .toggle.active::after { transform: translateX(18px); }
     </style>
 </head>
 <body>
@@ -51,94 +56,79 @@
     <script type="text/babel">
         const { useState, useEffect, useMemo, useCallback } = React;
         const CONFIG = { SUPABASE_URL: localStorage.getItem('supabase_url') || '', SUPABASE_KEY: localStorage.getItem('supabase_key') || '' };
+        const EXPORT_COOLDOWN_DAYS = 30;
 
         const supabase = {
             async query(table, options = {}) {
                 if (!CONFIG.SUPABASE_URL || !CONFIG.SUPABASE_KEY) return [];
-                
                 const baseParams = new URLSearchParams();
                 if (options.select) baseParams.append('select', options.select);
                 if (options.order) baseParams.append('order', options.order);
                 if (options.filters) options.filters.forEach(f => baseParams.append(f.col, f.val));
-                
-                // If a specific limit is requested, use single fetch
                 if (options.limit) {
                     baseParams.append('limit', options.limit);
                     const url = `${CONFIG.SUPABASE_URL}/rest/v1/${table}?${baseParams}`;
                     const res = await fetch(url, { headers: { 'apikey': CONFIG.SUPABASE_KEY, 'Authorization': `Bearer ${CONFIG.SUPABASE_KEY}` } });
                     return res.ok ? res.json() : [];
                 }
-                
-                // Otherwise, paginate to get all records
                 let allData = [];
                 let offset = 0;
                 const pageSize = 1000;
-                
                 while (true) {
                     const params = new URLSearchParams(baseParams);
                     params.append('limit', pageSize);
                     params.append('offset', offset);
-                    
                     const url = `${CONFIG.SUPABASE_URL}/rest/v1/${table}?${params}`;
                     const res = await fetch(url, { headers: { 'apikey': CONFIG.SUPABASE_KEY, 'Authorization': `Bearer ${CONFIG.SUPABASE_KEY}` } });
-                    
                     if (!res.ok) break;
-                    
                     const data = await res.json();
                     if (!data || data.length === 0) break;
-                    
                     allData = allData.concat(data);
-                    
                     if (data.length < pageSize) break;
                     offset += pageSize;
                 }
-                
                 return allData;
             },
             async insert(table, data) {
                 if (!CONFIG.SUPABASE_URL || !CONFIG.SUPABASE_KEY) return null;
                 const res = await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/${table}`, {
                     method: 'POST', headers: { 'apikey': CONFIG.SUPABASE_KEY, 'Authorization': `Bearer ${CONFIG.SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
-                    body: JSON.stringify(data)
+                    body: JSON.stringify(Array.isArray(data) ? data : [data])
                 });
                 return res.ok ? res.json() : null;
             },
             async update(table, id, data) {
                 if (!CONFIG.SUPABASE_URL || !CONFIG.SUPABASE_KEY) return null;
                 const res = await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
-                    method: 'PATCH', 
-                    headers: { 
-                        'apikey': CONFIG.SUPABASE_KEY, 
-                        'Authorization': `Bearer ${CONFIG.SUPABASE_KEY}`, 
-                        'Content-Type': 'application/json', 
-                        'Prefer': 'return=representation' 
-                    },
+                    method: 'PATCH', headers: { 'apikey': CONFIG.SUPABASE_KEY, 'Authorization': `Bearer ${CONFIG.SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
                     body: JSON.stringify(data)
                 });
-                if (!res.ok) {
-                    const err = await res.text();
-                    console.error('Update error:', res.status, err);
-                }
                 return res.ok ? res.json() : null;
             }
         };
 
-        const fmt = (price) => price == null ? '—' : `$${Number(price).toFixed(2)}`;
-        const fmtDate = (d) => d ? new Date(d).toLocaleDateString() : '—';
-        const exportDateTag = () => { const d = new Date(); return `MANUAL_${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`; };
+        const fmt = (val) => val != null ? `$${Number(val).toFixed(2)}` : '—';
+        const exportDateTag = () => { const d = new Date(); return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`; };
+        
+        const isRecentlyExported = (exportedAt) => {
+            if (!exportedAt) return false;
+            const exportDate = new Date(exportedAt);
+            const cutoff = new Date();
+            cutoff.setDate(cutoff.getDate() - EXPORT_COOLDOWN_DAYS);
+            return exportDate > cutoff;
+        };
 
         const KeepaDataDisplay = ({ data }) => {
             if (!data) return <span style={{color:'var(--text-dim)'}}>No Keepa data available</span>;
             const priceFields = [
                 { key: 'current_used', label: 'Current Used' }, { key: 'current_new', label: 'Current New' },
                 { key: 'current_amazon', label: 'Amazon Price' }, { key: 'current_ebay_used', label: 'eBay Used' },
-                { key: 'avg_used_365', label: 'Avg Used (365d)' }, { key: 'avg_new_365', label: 'Avg New (365d)' },
-                { key: 'lowest_used', label: 'Lowest Used (all-time)' }, { key: 'lowest_new', label: 'Lowest New' },
-                { key: 'lowest_used_365', label: 'Lowest Used (365d)' }, { key: 'lowest_buy_box_used', label: 'Lowest Buy Box Used' },
+                { key: 'avg_used_180', label: 'Avg Used (180d)' }, { key: 'avg_used_90', label: 'Avg Used (90d)' },
+                { key: 'lowest_used', label: 'Lowest Used' }, { key: 'lowest_new', label: 'Lowest New' },
             ];
             const otherFields = [
                 { key: 'sales_rank', label: 'Sales Rank', format: v => v?.toLocaleString() },
-                { key: 'avg_sales_rank', label: 'Avg Rank (365d)', format: v => v?.toLocaleString() },
+                { key: 'avg_sales_rank', label: 'Avg Rank', format: v => v?.toLocaleString() },
                 { key: 'offer_count_used', label: 'Used Offers' }, { key: 'offer_count_new', label: 'New Offers' },
                 { key: 'oos_90_used', label: 'OOS % (90d)', format: v => v != null ? `${v}%` : null },
             ];
@@ -173,7 +163,6 @@
                                 ))}
                             </tbody>
                         </table>
-                        {data.title && <div style={{marginTop:12}}><div style={{fontSize:11,color:'var(--text-dim)'}}>Title</div><div style={{fontSize:12}}>{data.title}</div></div>}
                     </div>
                 </div>
             );
@@ -198,104 +187,75 @@
 
         function StatsRow({ stats }) {
             return (
-                <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:12,marginBottom:24}}>
+                <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:12,marginBottom:24}}>
+                    <div className="card stat-card"><div className="stat-value" style={{color:'var(--orange)'}}>{stats.fringe || 0}</div><div className="stat-label">Fringe</div></div>
+                    <div className="card stat-card"><div className="stat-value" style={{color:'var(--cyan)'}}>{stats.highPriceKeepa || 0}</div><div className="stat-label">High Price Keepa</div></div>
                     <div className="card stat-card"><div className="stat-value" style={{color:'var(--green)'}}>{stats.hasSuggested || 0}</div><div className="stat-label">Has Suggested</div></div>
-                    <div className="card stat-card"><div className="stat-value" style={{color:'var(--orange)'}}>{stats.needsKeepa || 0}</div><div className="stat-label">Needs Keepa</div></div>
                     <div className="card stat-card"><div className="stat-value" style={{color:'var(--blue)'}}>{stats.readyToExport || 0}</div><div className="stat-label">Ready to Export</div></div>
-                    <div className="card stat-card"><div className="stat-value" style={{color:'var(--purple)'}}>{stats.supervisorQueue || 0}</div><div className="stat-label">Supervisor Queue</div></div>
-                    <div className="card stat-card"><div className="stat-value" style={{color:'var(--text-dim)'}}>{stats.totalExported || 0}</div><div className="stat-label">Total Exported</div></div>
+                    <div className="card stat-card"><div className="stat-value" style={{color:'var(--purple)'}}>{stats.supervisorQueue || 0}</div><div className="stat-label">Supervisor</div></div>
+                    <div className="card stat-card"><div className="stat-value" style={{color:'var(--text-dim)'}}>{stats.recentlyExported || 0}</div><div className="stat-label">Recently Exported</div></div>
                 </div>
             );
         }
 
-        function ApprovePriceModal({ isOpen, item, onClose, onApprove }) {
-            const [price, setPrice] = useState('');
-            const [notes, setNotes] = useState('');
-            useEffect(() => { if (item) { setPrice(item.suggested_price || item.floor_price || ''); setNotes(''); } }, [item]);
-            if (!isOpen || !item) return null;
-            const keepaData = { current_used: item.amazon_used_price, current_new: item.amazon_new_price, avg_used_365: item.amazon_90day_avg_price, sales_rank: item.amazon_sales_rank, avg_sales_rank: item.amazon_avg_sales_rank, offer_count_used: item.amazon_offer_count_used, offer_count_new: item.amazon_offer_count_new, lowest_used: item.amazon_lowest_used, lowest_new: item.amazon_lowest_new, lowest_used_365: item.amazon_lowest_used_365, lowest_buy_box_used: item.amazon_lowest_buy_box_used, oos_90_used: item.amazon_oos_90_used };
-            return (
-                <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000}}>
-                    <div className="card" style={{padding:24,width:600,maxHeight:'90vh',overflowY:'auto'}}>
-                        <h3 style={{margin:'0 0 16px',fontSize:18}}>✅ Approve Price</h3>
-                        <div style={{marginBottom:16,padding:12,background:'var(--bg-hover)',borderRadius:6}}>
-                            <div style={{display:'flex',justifyContent:'space-between',marginBottom:12}}>
-                                <div><div style={{fontSize:12,color:'var(--text-dim)'}}>ASIN</div><div className="mono" style={{fontSize:14}}>{item.asin}</div></div>
-                                <div><div style={{fontSize:12,color:'var(--text-dim)'}}>Current</div><div className="mono" style={{color:'var(--orange)'}}>{fmt(item.inventory?.current_list_price)}</div></div>
-                                <div><div style={{fontSize:12,color:'var(--text-dim)'}}>Floor</div><div className="mono" style={{color:'var(--yellow)'}}>{fmt(item.floor_price)}</div></div>
-                                <div><div style={{fontSize:12,color:'var(--text-dim)'}}>Suggested</div><div className="mono" style={{color:'var(--green)'}}>{fmt(item.suggested_price)}</div></div>
-                            </div>
-                            <div style={{fontSize:12}}>{item.inventory?.title || '—'}</div>
-                        </div>
-                        <div style={{marginBottom:16,padding:12,background:'var(--bg-hover)',borderRadius:6}}><div style={{fontSize:12,color:'var(--text-dim)',marginBottom:8}}>Keepa Data</div><KeepaDataDisplay data={keepaData} /></div>
-                        <div style={{marginBottom:16}}><label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Export Price ($)</label><input type="number" step="0.01" style={{width:'150px',fontSize:16}} className="mono" value={price} onChange={e => setPrice(e.target.value)} /></div>
-                        <div style={{marginBottom:20}}><label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Notes (optional)</label><textarea style={{width:'100%',height:60,background:'var(--bg-hover)',border:'1px solid var(--border)',borderRadius:6,padding:12,color:'var(--text)',fontSize:13,resize:'vertical'}} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional notes..." /></div>
-                        <div style={{display:'flex',gap:10,justifyContent:'flex-end'}}>
-                            <button className="btn-secondary" onClick={onClose}>Cancel</button>
-                            <button className="btn-primary" onClick={() => onApprove(item.id, parseFloat(price), notes, false)}>💾 Save & Review Later</button>
-                            <button className="btn-success" onClick={() => onApprove(item.id, parseFloat(price), notes, true)}>✅ Ready to Export</button>
-                        </div>
-                    </div>
-                </div>
-            );
-        }
-
-        function SettingsTab({ settings, onSave }) {
-            const [localSettings, setLocalSettings] = useState(settings);
-            const [saving, setSaving] = useState(false);
-            const [message, setMessage] = useState('');
-            const [shippingCsv, setShippingCsv] = useState('');
-            useEffect(() => { setLocalSettings(settings); if (settings.shipping_brackets?.length > 0) { setShippingCsv(settings.shipping_brackets.map(b => `${b.max_weight},${b.cost}`).join('\n')); } }, [settings]);
-            const parseShippingCsv = (csv) => { const lines = csv.trim().split('\n'); const brackets = []; for (const line of lines) { const parts = line.split(','); if (parts.length >= 2) { const max_weight = parseFloat(parts[0].trim()); const cost = parseFloat(parts[1].trim().replace('$', '')); if (!isNaN(max_weight) && !isNaN(cost)) brackets.push({ max_weight, cost }); } } return brackets.sort((a, b) => a.max_weight - b.max_weight); };
-            const handleCsvChange = (csv) => { setShippingCsv(csv); setLocalSettings({ ...localSettings, shipping_brackets: parseShippingCsv(csv) }); };
-            const handleSave = async () => { setSaving(true); setMessage(''); try { const toSave = { ...localSettings, shipping_brackets: parseShippingCsv(shippingCsv) }; await onSave(toSave); setMessage('✓ Settings saved!'); setTimeout(() => setMessage(''), 3000); } catch (err) { setMessage('✗ Error saving'); } setSaving(false); };
-            return (
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:24}}>
-                    <div className="card" style={{padding:20}}>
-                        <h3 style={{margin:'0 0 16px',fontSize:16}}>📦 Shipping Cost Brackets</h3>
-                        <p style={{fontSize:12,color:'var(--text-dim)',marginBottom:12}}>Paste CSV: weight (lbs), cost ($)</p>
-                        <textarea style={{width:'100%',height:300,background:'var(--bg-hover)',border:'1px solid var(--border)',borderRadius:6,padding:12,color:'var(--text)',fontFamily:'JetBrains Mono',fontSize:12,resize:'vertical'}} value={shippingCsv} onChange={e => handleCsvChange(e.target.value)} placeholder="1,2.64" />
-                        <div style={{marginTop:8,fontSize:12,color:'var(--text-dim)'}}>{parseShippingCsv(shippingCsv).length} brackets parsed</div>
-                    </div>
-                    <div>
-                        <div className="card" style={{padding:20,marginBottom:16}}>
-                            <h3 style={{margin:'0 0 16px',fontSize:16}}>💰 Pricing Settings</h3>
-                            <div style={{marginBottom:16}}><label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Minimum Profit ($)</label><input type="number" step="0.25" className="settings-input mono" value={localSettings.min_profit || 2.50} onChange={e => setLocalSettings({...localSettings, min_profit: parseFloat(e.target.value) || 0})} /></div>
-                            <div style={{marginBottom:16}}><label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Amazon Referral Fee (%)</label><input type="number" step="0.01" className="settings-input mono" value={(localSettings.amazon_referral_fee || 0.15) * 100} onChange={e => setLocalSettings({...localSettings, amazon_referral_fee: (parseFloat(e.target.value) || 0) / 100})} /></div>
-                            <div><label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Amazon Fixed Fee ($)</label><input type="number" step="0.10" className="settings-input mono" value={localSettings.amazon_fixed_fee || 1.80} onChange={e => setLocalSettings({...localSettings, amazon_fixed_fee: parseFloat(e.target.value) || 0})} /></div>
-                        </div>
-                        <div style={{display:'flex',gap:12,alignItems:'center'}}><button className="btn-success" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : '💾 Save Settings'}</button>{message && <span style={{fontSize:13,color: message.startsWith('✓') ? 'var(--green)' : 'var(--red)'}}>{message}</span>}</div>
-                    </div>
-                </div>
-            );
-        }
-
-        function FringeCasesTable({ cases, filter, onFilterChange, onApprove, onFlag, onRefresh, settings }) {
+        function PricingTable({ cases, tabType, filter, onFilterChange, onApprove, onFlag, onRefresh, settings, hideRecent, onToggleHideRecent }) {
             const [editedPrices, setEditedPrices] = useState({});
             const [selectedIds, setSelectedIds] = useState(new Set());
             const [page, setPage] = useState(0);
-            const [selectedKeepa, setSelectedKeepa] = useState(null); // For Keepa popup
+            const [selectedKeepa, setSelectedKeepa] = useState(null);
             const pageSize = 50;
             
+            const reasonLabels = { 
+                'ultrapricer_fallback': '⚠️ $100/$500 Fallback', 
+                'high_price_keepa': '💰 High Price >$70',
+            };
+            
             const filteredCases = useMemo(() => {
-                switch (filter) {
-                    case 'has_suggested': return cases.filter(c => c.suggested_price != null && !c.ready_to_export);
-                    case 'needs_keepa': return cases.filter(c => c.suggested_price == null);
-                    case 'ready_to_export': return cases.filter(c => c.ready_to_export);
-                    default: return cases;
+                let result = cases;
+                if (tabType === 'fringe') {
+                    result = result.filter(c => c.flag_reason === 'ultrapricer_fallback');
+                } else if (tabType === 'high_price_keepa') {
+                    result = result.filter(c => c.flag_reason === 'high_price_keepa');
                 }
-            }, [cases, filter]);
+                if (hideRecent) {
+                    result = result.filter(c => !isRecentlyExported(c.exported_at));
+                }
+                switch (filter) {
+                    case 'has_suggested': return result.filter(c => c.suggested_price != null && !c.ready_to_export);
+                    case 'needs_keepa': return result.filter(c => c.suggested_price == null);
+                    case 'ready_to_export': return result.filter(c => c.ready_to_export);
+                    case 'recently_exported': return cases.filter(c => 
+                        (tabType === 'fringe' ? c.flag_reason === 'ultrapricer_fallback' : c.flag_reason === 'high_price_keepa') && 
+                        isRecentlyExported(c.exported_at)
+                    );
+                    default: return result;
+                }
+            }, [cases, tabType, filter, hideRecent]);
             
             const totalPages = Math.ceil(filteredCases.length / pageSize);
             const pagedCases = filteredCases.slice(page * pageSize, (page + 1) * pageSize);
             
-            const counts = useMemo(() => ({ all: cases.length, has_suggested: cases.filter(c => c.suggested_price != null && !c.ready_to_export).length, needs_keepa: cases.filter(c => c.suggested_price == null).length, ready_to_export: cases.filter(c => c.ready_to_export).length }), [cases]);
-            const reasonLabels = { 'ultrapricer_fallback': '⚠️ Fallback', 'low_competition': 'Low Comp', 'no_keepa_data': 'No Keepa', 'high_variance': 'High Var' };
+            const tabCases = useMemo(() => {
+                let result = cases;
+                if (tabType === 'fringe') result = result.filter(c => c.flag_reason === 'ultrapricer_fallback');
+                else if (tabType === 'high_price_keepa') result = result.filter(c => c.flag_reason === 'high_price_keepa');
+                if (hideRecent) result = result.filter(c => !isRecentlyExported(c.exported_at));
+                return result;
+            }, [cases, tabType, hideRecent]);
+            
+            const counts = useMemo(() => ({ 
+                all: tabCases.length, 
+                has_suggested: tabCases.filter(c => c.suggested_price != null && !c.ready_to_export).length, 
+                needs_keepa: tabCases.filter(c => c.suggested_price == null).length, 
+                ready_to_export: tabCases.filter(c => c.ready_to_export).length,
+                recently_exported: cases.filter(c => 
+                    (tabType === 'fringe' ? c.flag_reason === 'ultrapricer_fallback' : c.flag_reason === 'high_price_keepa') && 
+                    isRecentlyExported(c.exported_at)
+                ).length
+            }), [tabCases, cases, tabType]);
             
             const getNewPrice = (c) => {
-                if (editedPrices[c.asin] !== undefined && editedPrices[c.asin] !== '') {
-                    return parseFloat(editedPrices[c.asin]) || 0;
-                }
+                if (editedPrices[c.asin] !== undefined && editedPrices[c.asin] !== '') return parseFloat(editedPrices[c.asin]) || 0;
                 return c.suggested_price || c.floor_price || 0;
             };
             
@@ -306,72 +266,32 @@
             
             const handleApprove = (c) => {
                 const price = getNewPrice(c);
-                if (c.floor_price && price < c.floor_price) {
-                    alert(`Price $${price.toFixed(2)} is below floor $${c.floor_price.toFixed(2)}`);
-                    return;
-                }
+                if (c.floor_price && price < c.floor_price) { alert(`Price $${price.toFixed(2)} is below floor $${c.floor_price.toFixed(2)}`); return; }
                 onApprove(c.id, price, '', true);
             };
             
-            const toggleSelect = (id) => {
-                const newSet = new Set(selectedIds);
-                if (newSet.has(id)) newSet.delete(id);
-                else newSet.add(id);
-                setSelectedIds(newSet);
-            };
-            
-            const toggleSelectAll = () => {
-                if (selectedIds.size === pagedCases.length) {
-                    setSelectedIds(new Set());
-                } else {
-                    setSelectedIds(new Set(pagedCases.map(c => c.id)));
-                }
-            };
+            const toggleSelect = (id) => { const newSet = new Set(selectedIds); if (newSet.has(id)) newSet.delete(id); else newSet.add(id); setSelectedIds(newSet); };
+            const toggleSelectAll = () => { if (selectedIds.size === pagedCases.length) setSelectedIds(new Set()); else setSelectedIds(new Set(pagedCases.map(c => c.id))); };
             
             const handleBatchApprove = async () => {
                 const itemsToApprove = pagedCases.filter(c => selectedIds.has(c.id) && (c.suggested_price || editedPrices[c.asin]));
-                if (itemsToApprove.length === 0) {
-                    alert('No items selected with prices');
-                    return;
-                }
-                // Check for below-floor prices
+                if (itemsToApprove.length === 0) { alert('No items selected with prices'); return; }
                 const belowFloor = itemsToApprove.filter(c => isPriceBelowFloor(c));
-                if (belowFloor.length > 0) {
-                    alert(`${belowFloor.length} item(s) have prices below floor. Please fix before approving.`);
-                    return;
-                }
-                for (const c of itemsToApprove) {
-                    const price = getNewPrice(c);
-                    await onApprove(c.id, price, '', true);
-                }
-                setSelectedIds(new Set());
-                setEditedPrices({});
+                if (belowFloor.length > 0) { alert(`${belowFloor.length} item(s) have prices below floor.`); return; }
+                for (const c of itemsToApprove) { await onApprove(c.id, getNewPrice(c), '', true); }
+                setSelectedIds(new Set()); setEditedPrices({});
             };
             
-            // Reset page when filter changes
-            useEffect(() => { setPage(0); setSelectedIds(new Set()); }, [filter]);
+            useEffect(() => { setPage(0); setSelectedIds(new Set()); }, [filter, tabType]);
             
-            // Load Keepa data for a fringe case
             const loadKeepaData = async (c) => {
-                // Try to fetch keepa data from fringe_cases or snapshot
-                const snapshot = await supabase.query('price_snapshots', {
-                    filters: [{ col: 'asin', val: `eq.${c.asin}` }],
-                    order: 'snapshot_date.desc',
-                    limit: 1
-                });
+                const snapshot = await supabase.query('price_snapshots', { filters: [{ col: 'asin', val: `eq.${c.asin}` }], order: 'snapshot_date.desc', limit: 1 });
                 const keepaData = snapshot?.[0] ? {
-                    current_used: snapshot[0].amazon_used_price,
-                    current_new: snapshot[0].amazon_new_price,
-                    avg_used_365: snapshot[0].amazon_90day_avg_price,
-                    sales_rank: snapshot[0].amazon_sales_rank,
-                    avg_sales_rank: snapshot[0].amazon_avg_sales_rank,
-                    offer_count_used: snapshot[0].amazon_offer_count_used,
-                    offer_count_new: snapshot[0].amazon_offer_count_new,
-                    current_ebay_used: snapshot[0].ebay_avg_price,
-                    lowest_used: snapshot[0].amazon_lowest_used,
-                    lowest_new: snapshot[0].amazon_lowest_new,
-                    lowest_used_365: snapshot[0].amazon_lowest_used_365,
-                    lowest_buy_box_used: snapshot[0].amazon_lowest_buy_box_used,
+                    current_used: snapshot[0].amazon_used_price, current_new: snapshot[0].amazon_new_price,
+                    avg_used_180: snapshot[0].amazon_180day_avg_price, avg_used_90: snapshot[0].amazon_90day_avg_price,
+                    sales_rank: snapshot[0].amazon_sales_rank, avg_sales_rank: snapshot[0].amazon_avg_sales_rank,
+                    offer_count_used: snapshot[0].amazon_offer_count_used, offer_count_new: snapshot[0].amazon_offer_count_new,
+                    lowest_used: snapshot[0].amazon_lowest_used, lowest_new: snapshot[0].amazon_lowest_new,
                     oos_90_used: snapshot[0].amazon_oos_90_used
                 } : null;
                 setSelectedKeepa({ asin: c.asin, title: c.inventory?.title, keepa_data: keepaData, floor_price: c.floor_price, suggested_price: c.suggested_price });
@@ -381,21 +301,22 @@
                 <div className="card" style={{overflow:'hidden'}}>
                     <div style={{padding:16,borderBottom:'1px solid var(--border)',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
                         <select value={filter} onChange={e => onFilterChange(e.target.value)} style={{minWidth:220}}>
-                            <option value="all">All Issues ({counts.all})</option>
-                            <option value="has_suggested">✓ Has Suggested Price ({counts.has_suggested})</option>
-                            <option value="needs_keepa">✗ Needs Keepa Run ({counts.needs_keepa})</option>
+                            <option value="all">All ({counts.all})</option>
+                            <option value="has_suggested">✓ Has Suggested ({counts.has_suggested})</option>
+                            <option value="needs_keepa">✗ Needs Keepa ({counts.needs_keepa})</option>
                             <option value="ready_to_export">🚀 Ready to Export ({counts.ready_to_export})</option>
+                            <option value="recently_exported">📦 Recently Exported ({counts.recently_exported})</option>
                         </select>
+                        
+                        <div style={{display:'flex',alignItems:'center',gap:8}}>
+                            <span style={{fontSize:12,color:'var(--text-dim)'}}>Hide exported (30d)</span>
+                            <div className={`toggle ${hideRecent ? 'active' : ''}`} onClick={onToggleHideRecent}></div>
+                        </div>
                         
                         <span style={{fontSize:13,color:'var(--text-dim)'}}>{selectedIds.size} selected</span>
                         
-                        <button 
-                            className="btn-success btn-small" 
-                            onClick={handleBatchApprove}
-                            disabled={selectedIds.size === 0}
-                            style={{opacity: selectedIds.size === 0 ? 0.5 : 1}}
-                        >
-                            ✓ Approve Selected ({selectedIds.size})
+                        <button className="btn-success btn-small" onClick={handleBatchApprove} disabled={selectedIds.size === 0} style={{opacity: selectedIds.size === 0 ? 0.5 : 1}}>
+                            ✓ Approve ({selectedIds.size})
                         </button>
                         
                         <div style={{flex:1}}></div>
@@ -412,80 +333,62 @@
                         <table>
                             <thead style={{position:'sticky',top:0,background:'var(--bg-card)',zIndex:1}}>
                                 <tr>
-                                    <th style={{width:40}}>
-                                        <input type="checkbox" className="checkbox" 
-                                            checked={selectedIds.size === pagedCases.length && pagedCases.length > 0}
-                                            onChange={toggleSelectAll}
-                                        />
-                                    </th>
-                                    <th>ASIN</th><th>Title</th><th>Issue</th><th>Current</th><th>Floor</th><th>Suggested</th><th style={{width:100}}>New Price</th><th style={{width:80}}>Actions</th>
+                                    <th style={{width:40}}><input type="checkbox" className="checkbox" checked={selectedIds.size === pagedCases.length && pagedCases.length > 0} onChange={toggleSelectAll} /></th>
+                                    <th>ASIN</th><th>Title</th><th>Type</th><th>Current</th><th>Floor</th><th>Suggested</th><th style={{width:100}}>New Price</th><th style={{width:80}}>Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {pagedCases.map(c => {
-                                    const isFallback = c.flag_reason === 'ultrapricer_fallback';
                                     const hasEdited = editedPrices[c.asin] !== undefined && editedPrices[c.asin] !== '';
                                     const isSelected = selectedIds.has(c.id);
                                     const belowFloor = isPriceBelowFloor(c);
+                                    const wasExported = isRecentlyExported(c.exported_at);
                                     return (
-                                        <tr key={c.id} className={isSelected ? 'selected' : ''}>
-                                            <td>
-                                                <input type="checkbox" className="checkbox" checked={isSelected} onChange={() => toggleSelect(c.id)} />
-                                            </td>
+                                        <tr key={c.id} className={isSelected ? 'selected' : ''} style={{opacity: wasExported ? 0.6 : 1}}>
+                                            <td><input type="checkbox" className="checkbox" checked={isSelected} onChange={() => toggleSelect(c.id)} /></td>
                                             <td className="mono" style={{fontSize:11}}>
                                                 <a href={`http://lkdev.com/a.php?a=${c.asin}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--blue)',textDecoration:'none'}}>{c.asin}</a>
                                             </td>
                                             <td style={{maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:12}}>{c.inventory?.title || '—'}</td>
-                                            <td><span className={`badge ${isFallback ? 'badge-orange' : 'badge-yellow'}`}>{reasonLabels[c.flag_reason] || c.flag_reason}</span></td>
-                                            <td className="mono" style={{fontSize:12,color: isFallback ? 'var(--orange)' : 'var(--text)'}}>{fmt(c.inventory?.current_list_price)}</td>
+                                            <td>
+                                                <span className={`badge ${c.flag_reason === 'ultrapricer_fallback' ? 'badge-orange' : 'badge-cyan'}`}>
+                                                    {reasonLabels[c.flag_reason] || c.flag_reason}
+                                                </span>
+                                                {wasExported && <span className="badge badge-blue" style={{marginLeft:4}}>Exported</span>}
+                                            </td>
+                                            <td className="mono" style={{fontSize:12,color:'var(--orange)'}}>{fmt(c.inventory?.current_list_price)}</td>
                                             <td className="mono" style={{fontSize:12,color:'var(--yellow)'}}>{fmt(c.floor_price)}</td>
                                             <td>
                                                 {c.suggested_price ? (
-                                                    <span 
-                                                        className="mono" 
-                                                        style={{fontSize:12,color:'var(--green)',cursor:'pointer',textDecoration:'underline'}}
-                                                        onClick={() => loadKeepaData(c)}
-                                                        title="Click to view Keepa data"
-                                                    >
+                                                    <span className="mono" style={{fontSize:12,color:'var(--green)',cursor:'pointer',textDecoration:'underline'}} onClick={() => loadKeepaData(c)} title="Click to view Keepa data">
                                                         {fmt(c.suggested_price)}
                                                     </span>
-                                                ) : (
-                                                    <span className="mono" style={{fontSize:12,color:'var(--text-dim)'}}>—</span>
-                                                )}
+                                                ) : <span className="mono" style={{fontSize:12,color:'var(--text-dim)'}}>—</span>}
                                             </td>
                                             <td>
-                                                <input 
-                                                    type="number" 
-                                                    step="0.01" 
-                                                    className="mono"
-                                                    style={{
-                                                        width:'80px',
-                                                        padding:'4px 8px',
-                                                        fontSize:12,
-                                                        textAlign:'right',
+                                                <input type="number" step="0.01" className="mono"
+                                                    style={{ width:'80px', padding:'4px 8px', fontSize:12, textAlign:'right',
                                                         background: belowFloor ? 'rgba(239,68,68,0.1)' : hasEdited ? 'var(--bg-dark)' : 'var(--bg-hover)',
                                                         borderColor: belowFloor ? 'var(--red)' : hasEdited ? 'var(--blue)' : 'var(--border)'
                                                     }}
-                                                    placeholder={c.suggested_price?.toFixed(2) || ''}
-                                                    value={editedPrices[c.asin] || ''}
+                                                    placeholder={c.suggested_price?.toFixed(2) || ''} value={editedPrices[c.asin] || ''}
                                                     onChange={e => setEditedPrices(prev => ({...prev, [c.asin]: e.target.value}))}
                                                 />
                                             </td>
                                             <td style={{display:'flex',gap:4}}>
                                                 {(c.suggested_price || hasEdited) && !c.ready_to_export && (
-                                                    <button className="btn-small btn-success" onClick={() => handleApprove(c)} disabled={belowFloor} style={{opacity: belowFloor ? 0.5 : 1}} title={belowFloor ? 'Price below floor!' : 'Approve & Ready to Export'}>✓</button>
+                                                    <button className="btn-small btn-success" onClick={() => handleApprove(c)} disabled={belowFloor} style={{opacity: belowFloor ? 0.5 : 1}} title={belowFloor ? 'Price below floor!' : 'Approve'}>✓</button>
                                                 )}
                                                 <button className="btn-small" style={{background:'transparent',color:'var(--purple)',padding:'4px 8px'}} onClick={() => onFlag(c.asin)} title="Flag for supervisor">🚩</button>
                                             </td>
                                         </tr>
                                     );
                                 })}
-                                {pagedCases.length === 0 && <tr><td colSpan={9} style={{textAlign:'center',padding:40,color:'var(--text-dim)'}}>{filter === 'ready_to_export' ? 'No items ready to export yet' : 'No items found'}</td></tr>}
+                                {pagedCases.length === 0 && <tr><td colSpan={9} style={{textAlign:'center',padding:40,color:'var(--text-dim)'}}>No items found</td></tr>}
                             </tbody>
                         </table>
                     </div>
                     
-                    {/* Keepa Data Popup */}
                     {selectedKeepa && (
                         <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000}}>
                             <div className="card" style={{padding:24,width:600,maxHeight:'80vh',overflowY:'auto'}}>
@@ -495,25 +398,14 @@
                                 </div>
                                 <div style={{marginBottom:16,padding:12,background:'var(--bg-hover)',borderRadius:6}}>
                                     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:12}}>
-                                        <div>
-                                            <div style={{fontSize:12,color:'var(--text-dim)'}}>ASIN</div>
-                                            <a href={`http://lkdev.com/a.php?a=${selectedKeepa.asin}`} target="_blank" rel="noopener noreferrer" className="mono" style={{fontSize:14,color:'var(--blue)'}}>{selectedKeepa.asin}</a>
-                                        </div>
-                                        <div>
-                                            <div style={{fontSize:12,color:'var(--text-dim)'}}>Floor Price</div>
-                                            <div className="mono" style={{fontSize:14,color:'var(--yellow)'}}>{fmt(selectedKeepa.floor_price)}</div>
-                                        </div>
-                                        <div>
-                                            <div style={{fontSize:12,color:'var(--text-dim)'}}>Suggested Price</div>
-                                            <div className="mono" style={{fontSize:14,color:'var(--green)'}}>{fmt(selectedKeepa.suggested_price)}</div>
-                                        </div>
+                                        <div><div style={{fontSize:12,color:'var(--text-dim)'}}>ASIN</div><a href={`http://lkdev.com/a.php?a=${selectedKeepa.asin}`} target="_blank" className="mono" style={{fontSize:14,color:'var(--blue)'}}>{selectedKeepa.asin}</a></div>
+                                        <div><div style={{fontSize:12,color:'var(--text-dim)'}}>Floor</div><div className="mono" style={{fontSize:14,color:'var(--yellow)'}}>{fmt(selectedKeepa.floor_price)}</div></div>
+                                        <div><div style={{fontSize:12,color:'var(--text-dim)'}}>Suggested</div><div className="mono" style={{fontSize:14,color:'var(--green)'}}>{fmt(selectedKeepa.suggested_price)}</div></div>
                                     </div>
-                                    {selectedKeepa.title && <div style={{fontSize:12,color:'var(--text-dim)'}}>{selectedKeepa.title}</div>}
+                                    <div style={{fontSize:12}}>{selectedKeepa.title || '—'}</div>
                                 </div>
                                 <KeepaDataDisplay data={selectedKeepa.keepa_data} />
-                                <div style={{display:'flex',justifyContent:'flex-end',marginTop:16}}>
-                                    <button className="btn-primary" onClick={() => setSelectedKeepa(null)}>Close</button>
-                                </div>
+                                <div style={{marginTop:16,textAlign:'right'}}><button className="btn-primary" onClick={() => setSelectedKeepa(null)}>Close</button></div>
                             </div>
                         </div>
                     )}
@@ -521,162 +413,111 @@
             );
         }
 
-        function ExportTab({ cases, onExport, onRefresh }) {
-            const [selectedIds, setSelectedIds] = useState(new Set());
-            const readyItems = useMemo(() => cases.filter(c => c.ready_to_export), [cases]);
-            const toggleSelect = (id) => { const newSet = new Set(selectedIds); if (newSet.has(id)) newSet.delete(id); else newSet.add(id); setSelectedIds(newSet); };
-            const toggleSelectAll = () => { if (selectedIds.size === readyItems.length) setSelectedIds(new Set()); else setSelectedIds(new Set(readyItems.map(c => c.id))); };
-            const handleExport = () => {
-                const items = readyItems.filter(c => selectedIds.has(c.id)).map(c => ({ id: c.id, asin: c.asin, old_price: c.inventory?.current_list_price, new_price: c.approved_price || c.suggested_price, title: c.inventory?.title }));
-                if (items.length === 0) { alert('Please select items to export'); return; }
-                onExport(items); setSelectedIds(new Set());
-            };
+        function FlagForReviewModal({ isOpen, onClose, asin, onSubmit }) {
+            const [reason, setReason] = useState('');
+            const [details, setDetails] = useState('');
+            const [flaggedBy, setFlaggedBy] = useState('');
+            if (!isOpen) return null;
+            const handleSubmit = () => { onSubmit({ asin, reason, details, flagged_by: flaggedBy }); setReason(''); setDetails(''); setFlaggedBy(''); onClose(); };
             return (
-                <div className="card" style={{overflow:'hidden'}}>
-                    <div style={{padding:16,borderBottom:'1px solid var(--border)',display:'flex',gap:12,alignItems:'center'}}>
-                        <h3 style={{margin:0,fontSize:16}}>🚀 Ready to Export ({readyItems.length})</h3>
-                        <div style={{flex:1}}></div>
-                        <span style={{fontSize:13,color:'var(--text-dim)'}}>{selectedIds.size} selected</span>
-                        <button className="btn-secondary" onClick={onRefresh}>↻ Refresh</button>
-                        <button className="btn-success" onClick={handleExport} disabled={selectedIds.size === 0} style={{opacity: selectedIds.size === 0 ? 0.5 : 1}}>📤 Export CSV ({selectedIds.size})</button>
-                    </div>
-                    <div style={{overflowX:'auto',maxHeight:'60vh',overflowY:'auto'}}>
-                        <table>
-                            <thead style={{position:'sticky',top:0,background:'var(--bg-card)',zIndex:1}}>
-                                <tr><th style={{width:40}}><input type="checkbox" className="checkbox" checked={selectedIds.size === readyItems.length && readyItems.length > 0} onChange={toggleSelectAll} /></th><th>ASIN</th><th>Title</th><th>Current</th><th>Export Price</th><th>Notes</th></tr>
-                            </thead>
-                            <tbody>
-                                {readyItems.map(c => (
-                                    <tr key={c.id} className={selectedIds.has(c.id) ? 'selected' : ''}>
-                                        <td><input type="checkbox" className="checkbox" checked={selectedIds.has(c.id)} onChange={() => toggleSelect(c.id)} /></td>
-                                        <td className="mono" style={{fontSize:11}}>
-                                            <a href={`http://lkdev.com/a.php?a=${c.asin}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--blue)',textDecoration:'none'}}>{c.asin}</a>
-                                        </td>
-                                        <td style={{maxWidth:250,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:12}}>{c.inventory?.title || '—'}</td>
-                                        <td className="mono" style={{color:'var(--orange)'}}>{fmt(c.inventory?.current_list_price)}</td>
-                                        <td className="mono" style={{color:'var(--green)',fontWeight:600}}>{fmt(c.approved_price || c.suggested_price)}</td>
-                                        <td style={{fontSize:12,color:'var(--text-dim)'}}>{c.approval_notes || '—'}</td>
-                                    </tr>
-                                ))}
-                                {readyItems.length === 0 && <tr><td colSpan={6} style={{textAlign:'center',padding:40,color:'var(--text-dim)'}}>No items ready. Approve items from Review tab first.</td></tr>}
-                            </tbody>
-                        </table>
+                <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000}}>
+                    <div className="card" style={{padding:24,width:450}}>
+                        <h3 style={{margin:'0 0 16px',fontSize:18}}>🚩 Flag for Review</h3>
+                        <div style={{marginBottom:12,padding:8,background:'var(--bg-hover)',borderRadius:6}}><span className="mono" style={{fontSize:13}}>{asin}</span></div>
+                        <div style={{marginBottom:12}}><label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Reason</label><select style={{width:'100%'}} value={reason} onChange={e => setReason(e.target.value)}><option value="">Select...</option><option value="price_too_high">Price too high</option><option value="price_too_low">Price too low</option><option value="bad_data">Bad data</option><option value="other">Other</option></select></div>
+                        <div style={{marginBottom:12}}><label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Details</label><textarea style={{width:'100%',height:80,background:'var(--bg-hover)',border:'1px solid var(--border)',borderRadius:6,padding:12,color:'var(--text)',fontSize:13,resize:'vertical'}} value={details} onChange={e => setDetails(e.target.value)} /></div>
+                        <div style={{marginBottom:16}}><label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Your Name</label><input style={{width:'100%'}} value={flaggedBy} onChange={e => setFlaggedBy(e.target.value)} /></div>
+                        <div style={{display:'flex',gap:10,justifyContent:'flex-end'}}><button className="btn-secondary" onClick={onClose}>Cancel</button><button className="btn-primary" onClick={handleSubmit} disabled={!reason}>Submit</button></div>
                     </div>
                 </div>
             );
         }
 
+        function ExportTab({ cases, onExport, onRefresh }) {
+            const readyItems = cases.filter(c => c.ready_to_export && (c.flag_reason === 'ultrapricer_fallback' || c.flag_reason === 'high_price_keepa'));
+            const handleExport = () => { if (readyItems.length === 0) { alert('No items ready'); return; } onExport(readyItems.map(c => ({ id: c.id, asin: c.asin, old_price: c.inventory?.current_list_price || 0, new_price: c.approved_price || c.suggested_price }))); };
+            return (
+                <div className="card" style={{padding:20}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
+                        <h3 style={{margin:0,fontSize:16}}>🚀 Ready to Export ({readyItems.length})</h3>
+                        <div style={{display:'flex',gap:10}}><button className="btn-secondary" onClick={onRefresh}>↻ Refresh</button><button className="btn-success" onClick={handleExport} disabled={readyItems.length === 0}>📥 Download CSV</button></div>
+                    </div>
+                    {readyItems.length === 0 ? <div style={{textAlign:'center',padding:40,color:'var(--text-dim)'}}>No items ready. Approve prices first!</div> : (
+                        <div style={{overflowX:'auto',maxHeight:'50vh',overflowY:'auto'}}>
+                            <table>
+                                <thead style={{position:'sticky',top:0,background:'var(--bg-card)'}}>
+                                    <tr><th>ASIN</th><th>Title</th><th>Type</th><th>Old</th><th>New</th><th>Change</th></tr>
+                                </thead>
+                                <tbody>
+                                    {readyItems.map(c => {
+                                        const oldPrice = c.inventory?.current_list_price || 0;
+                                        const newPrice = c.approved_price || c.suggested_price || 0;
+                                        const change = newPrice - oldPrice;
+                                        return (
+                                            <tr key={c.id}>
+                                                <td className="mono" style={{fontSize:11}}><a href={`http://lkdev.com/a.php?a=${c.asin}`} target="_blank" style={{color:'var(--blue)',textDecoration:'none'}}>{c.asin}</a></td>
+                                                <td style={{maxWidth:250,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:12}}>{c.inventory?.title || '—'}</td>
+                                                <td><span className={`badge ${c.flag_reason === 'ultrapricer_fallback' ? 'badge-orange' : 'badge-cyan'}`}>{c.flag_reason === 'ultrapricer_fallback' ? 'Fringe' : 'High Price'}</span></td>
+                                                <td className="mono" style={{fontSize:12,color:'var(--orange)'}}>{fmt(oldPrice)}</td>
+                                                <td className="mono" style={{fontSize:12,color:'var(--green)'}}>{fmt(newPrice)}</td>
+                                                <td className="mono" style={{fontSize:12,color: change >= 0 ? 'var(--green)' : 'var(--red)'}}>{change >= 0 ? '+' : ''}{fmt(change)}</td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        function ExportHistoryTab({ onRefresh }) {
+            const [exports, setExports] = useState([]);
+            const [loading, setLoading] = useState(true);
+            useEffect(() => { (async () => { setLoading(true); const data = await supabase.query('price_exports', { order: 'created_at.desc', limit: 50 }); setExports(data || []); setLoading(false); })(); }, []);
+            if (loading) return <div style={{textAlign:'center',padding:40,color:'var(--text-dim)'}}>Loading...</div>;
+            return (
+                <div className="card" style={{padding:20}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}><h3 style={{margin:0,fontSize:16}}>📦 Export History</h3><button className="btn-secondary" onClick={onRefresh}>↻</button></div>
+                    {exports.length === 0 ? <div style={{textAlign:'center',padding:40,color:'var(--text-dim)'}}>No exports yet</div> : (
+                        <table><thead><tr><th>Date</th><th>Items</th><th>By</th></tr></thead>
+                        <tbody>{exports.map(e => (<tr key={e.id}><td style={{fontSize:12}}>{new Date(e.created_at).toLocaleString()}</td><td className="mono">{e.item_count}</td><td style={{fontSize:12}}>{e.exported_by || '—'}</td></tr>))}</tbody></table>
+                    )}
+                </div>
+            );
+        }
+
         function SupervisorReviewTab({ reviews, onResolve, onRefresh, settings }) {
-            const [filter, setFilter] = useState('pending');
             const [selectedReview, setSelectedReview] = useState(null);
-            const [reviewNotes, setReviewNotes] = useState('');
+            const [notes, setNotes] = useState('');
             const [reviewedBy, setReviewedBy] = useState('');
             const [exportPrice, setExportPrice] = useState('');
-            const [floorPrice, setFloorPrice] = useState(0);
-            const filteredReviews = useMemo(() => filter === 'all' ? reviews : reviews.filter(r => r.status === filter), [reviews, filter]);
-            const pendingCount = reviews.filter(r => r.status === 'pending').length;
-            const reviewedCount = reviews.filter(r => r.status === 'reviewed').length;
-            
-            const calculateFloor = useCallback(() => {
-                const minProfit = settings?.min_profit || 2.50;
-                const referralFee = settings?.amazon_referral_fee || 0.15;
-                const fixedFee = settings?.amazon_fixed_fee || 1.80;
-                const shippingCost = settings?.shipping_brackets?.[0]?.cost || 2.64;
-                const minNet = fixedFee + shippingCost + minProfit;
-                return Math.round((minNet / (1 - referralFee)) * 100) / 100;
-            }, [settings]);
-            
-            useEffect(() => { 
-                const floor = calculateFloor();
-                setFloorPrice(floor);
-                if (selectedReview?.keepa_data) { 
-                    const kd = selectedReview.keepa_data; 
-                    const suggestedPrice = Math.max(kd.lowest_used || kd.current_used || kd.avg_used_365 || floor, floor);
-                    setExportPrice(suggestedPrice ? suggestedPrice.toFixed(2) : floor.toFixed(2)); 
-                } else {
-                    setExportPrice(floor.toFixed(2));
-                }
-            }, [selectedReview, calculateFloor]);
-            
-            const isPriceBelowFloor = parseFloat(exportPrice) < floorPrice;
-            
-            const handleResolve = async (id, status, makeReadyToExport) => { 
-                if (makeReadyToExport && isPriceBelowFloor) {
-                    alert(`Price cannot be below floor ($${floorPrice.toFixed(2)})`);
-                    return;
-                }
-                await onResolve(id, status, reviewNotes, reviewedBy, makeReadyToExport ? parseFloat(exportPrice) : null); 
-                setSelectedReview(null); 
-                setReviewNotes(''); 
-                setExportPrice(''); 
-            };
-            const reasonLabels = { 'insufficient_keepa_data': '📊 Insufficient Data', 'no_keepa_data': '❌ No Keepa Data', 'employee_flag': '🚩 Employee Flag', 'price_concern': '💰 Price Concern', 'manual_review': '👁️ Manual Review', 'other': '📝 Other' };
+            const pendingReviews = reviews.filter(r => r.status === 'pending');
+            const handleResolve = async (status) => { if (!reviewedBy) { alert('Enter your name'); return; } await onResolve(selectedReview.id, status, notes, reviewedBy, status === 'reviewed' && exportPrice ? parseFloat(exportPrice) : null); setSelectedReview(null); setNotes(''); setReviewedBy(''); setExportPrice(''); };
             return (
-                <div>
-                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
-                        <div style={{display:'flex',gap:12,alignItems:'center'}}>
-                            <h3 style={{margin:0,fontSize:16}}>👔 Supervisor Review Queue</h3>
-                            <select value={filter} onChange={e => setFilter(e.target.value)} style={{minWidth:150}}>
-                                <option value="pending">Pending ({pendingCount})</option>
-                                <option value="reviewed">Reviewed ({reviewedCount})</option>
-                                <option value="all">All ({reviews.length})</option>
-                            </select>
-                        </div>
-                        <button className="btn-secondary" onClick={onRefresh}>↻ Refresh</button>
-                    </div>
-                    <div className="card" style={{overflow:'hidden'}}>
-                        <table>
-                            <thead><tr><th>ASIN</th><th>Reason</th><th>Details</th><th>Flagged By</th><th>Created</th><th>Status</th><th style={{width:120}}>Actions</th></tr></thead>
-                            <tbody>
-                                {filteredReviews.map(r => (
-                                    <tr key={r.id}>
-                                        <td className="mono" style={{fontSize:11}}>
-                                            <a href={`http://lkdev.com/a.php?a=${r.asin}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--blue)',textDecoration:'none'}}>{r.asin}</a>
-                                        </td>
-                                        <td><span className="badge badge-purple">{reasonLabels[r.reason] || r.reason}</span></td>
-                                        <td style={{maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:12}}>{r.details || '—'}</td>
-                                        <td style={{fontSize:12}}>{r.flagged_by || 'System'}</td>
-                                        <td style={{fontSize:12}}>{fmtDate(r.created_at)}</td>
-                                        <td><span className={`badge ${r.status === 'pending' ? 'badge-yellow' : 'badge-green'}`}>{r.status}</span></td>
-                                        <td>{r.status === 'pending' && <button className="btn-small btn-primary" onClick={() => setSelectedReview(r)}>Review</button>}</td>
-                                    </tr>
+                <div className="card" style={{padding:20}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}><h3 style={{margin:0,fontSize:16}}>👔 Supervisor Queue ({pendingReviews.length})</h3><button className="btn-secondary" onClick={onRefresh}>↻</button></div>
+                    {pendingReviews.length === 0 ? <div style={{textAlign:'center',padding:40,color:'var(--text-dim)'}}>No items pending</div> : (
+                        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:20}}>
+                            <div style={{maxHeight:'60vh',overflowY:'auto'}}>
+                                {pendingReviews.map(r => (
+                                    <div key={r.id} className="card" style={{padding:12,marginBottom:8,cursor:'pointer',border: selectedReview?.id === r.id ? '2px solid var(--blue)' : '1px solid var(--border)'}} onClick={() => { setSelectedReview(r); setExportPrice(''); }}>
+                                        <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}><span className="mono" style={{fontSize:12,color:'var(--blue)'}}>{r.asin}</span><span className="badge badge-purple">{r.reason}</span></div>
+                                        <div style={{fontSize:11,color:'var(--text-dim)'}}>{r.details || 'No details'}</div>
+                                    </div>
                                 ))}
-                                {filteredReviews.length === 0 && <tr><td colSpan={7} style={{textAlign:'center',padding:40,color:'var(--text-dim)'}}>{filter === 'pending' ? '🎉 No pending reviews!' : 'No reviews found'}</td></tr>}
-                            </tbody>
-                        </table>
-                    </div>
-                    {selectedReview && (
-                        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000}}>
-                            <div className="card" style={{padding:24,width:650,maxHeight:'90vh',overflowY:'auto'}}>
-                                <h3 style={{margin:'0 0 16px',fontSize:18}}>📋 Review Item</h3>
-                                <div style={{marginBottom:16,padding:12,background:'var(--bg-hover)',borderRadius:6}}>
-                                    <div style={{display:'flex',justifyContent:'space-between',marginBottom:12}}>
-                                        <div><div style={{fontSize:12,color:'var(--text-dim)'}}>ASIN</div><a href={`http://lkdev.com/a.php?a=${selectedReview.asin}`} target="_blank" rel="noopener noreferrer" className="mono" style={{fontSize:14,color:'var(--blue)'}}>{selectedReview.asin}</a></div>
-                                        <div><div style={{fontSize:12,color:'var(--text-dim)'}}>Reason</div><div>{reasonLabels[selectedReview.reason] || selectedReview.reason}</div></div>
-                                        <div><div style={{fontSize:12,color:'var(--text-dim)'}}>Floor Price</div><div className="mono" style={{fontSize:14,color:'var(--yellow)'}}>${floorPrice.toFixed(2)}</div></div>
+                            </div>
+                            <div>
+                                {selectedReview ? (
+                                    <div className="card" style={{padding:16}}>
+                                        <h4 style={{margin:'0 0 12px'}}>Review: {selectedReview.asin}</h4>
+                                        <div style={{marginBottom:12}}><label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Export Price ($)</label><input type="number" step="0.01" className="mono" style={{width:120}} value={exportPrice} onChange={e => setExportPrice(e.target.value)} /></div>
+                                        <div style={{marginBottom:12}}><label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Notes</label><textarea style={{width:'100%',height:80,background:'var(--bg-hover)',border:'1px solid var(--border)',borderRadius:6,padding:12,color:'var(--text)',fontSize:13}} value={notes} onChange={e => setNotes(e.target.value)} /></div>
+                                        <div style={{marginBottom:16}}><label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Your Name</label><input style={{width:'100%'}} value={reviewedBy} onChange={e => setReviewedBy(e.target.value)} /></div>
+                                        <div style={{display:'flex',gap:10}}><button className="btn-success" onClick={() => handleResolve('reviewed')}>✓ Approve</button><button className="btn-danger" onClick={() => handleResolve('rejected')}>✗ Reject</button></div>
                                     </div>
-                                    <div style={{fontSize:12,color:'var(--text-dim)',marginBottom:4}}>Details</div>
-                                    <div style={{fontSize:13,marginBottom:16}}>{selectedReview.details || '—'}</div>
-                                    <div style={{borderTop:'1px solid var(--border)',paddingTop:12}}>
-                                        <div style={{fontSize:12,color:'var(--text-dim)',marginBottom:8}}>Keepa Data</div>
-                                        <KeepaDataDisplay data={selectedReview.keepa_data} />
-                                    </div>
-                                </div>
-                                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
-                                    <div><label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Your Name</label><input style={{width:'100%'}} value={reviewedBy} onChange={e => setReviewedBy(e.target.value)} placeholder="Supervisor name" /></div>
-                                    <div>
-                                        <label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Export Price ($) <span style={{color:'var(--yellow)'}}>(min: ${floorPrice.toFixed(2)})</span></label>
-                                        <input type="number" step="0.01" style={{width:'100%',borderColor: isPriceBelowFloor ? 'var(--red)' : 'var(--border)',background: isPriceBelowFloor ? 'rgba(239,68,68,0.1)' : 'var(--bg-hover)'}} className="mono" value={exportPrice} onChange={e => setExportPrice(e.target.value)} placeholder="0.00" />
-                                        {isPriceBelowFloor && <div style={{color:'var(--red)',fontSize:11,marginTop:4}}>⚠️ Price is below floor!</div>}
-                                    </div>
-                                </div>
-                                <div style={{marginBottom:20}}><label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Review Notes</label><textarea style={{width:'100%',height:80,background:'var(--bg-hover)',border:'1px solid var(--border)',borderRadius:6,padding:12,color:'var(--text)',fontSize:13,resize:'vertical'}} value={reviewNotes} onChange={e => setReviewNotes(e.target.value)} placeholder="Add notes..." /></div>
-                                <div style={{display:'flex',gap:10,justifyContent:'flex-end'}}>
-                                    <button className="btn-secondary" onClick={() => {setSelectedReview(null); setReviewNotes(''); setExportPrice('');}}>Cancel</button>
-                                    <button className="btn-danger" onClick={() => handleResolve(selectedReview.id, 'ignored', false)}>Ignore</button>
-                                    <button className="btn-primary" onClick={() => handleResolve(selectedReview.id, 'reviewed', false)}>💾 Save & Review Later</button>
-                                    <button className="btn-success" onClick={() => handleResolve(selectedReview.id, 'reviewed', true)} disabled={!exportPrice || isPriceBelowFloor} style={{opacity: (!exportPrice || isPriceBelowFloor) ? 0.5 : 1}}>✅ Ready to Export</button>
-                                </div>
+                                ) : <div style={{padding:40,textAlign:'center',color:'var(--text-dim)'}}>Select item to review</div>}
                             </div>
                         </div>
                     )}
@@ -686,1100 +527,163 @@
 
         function AgingReviewTab({ reviewType, settings, onRefresh }) {
             const [reviews, setReviews] = useState([]);
-            const [selectedIds, setSelectedIds] = useState(new Set());
             const [editedPrices, setEditedPrices] = useState({});
             const [profitReduction, setProfitReduction] = useState(10);
             const [loading, setLoading] = useState(true);
             const [statusFilter, setStatusFilter] = useState('pending');
-            const [filters, setFilters] = useState({ ageBucket: 'all', rankMin: '', rankMax: '', priceMin: '', priceMax: '' });
+            const [hideRecent, setHideRecent] = useState(true);
             
-            const title = reviewType === 'high_rank' ? '📈 High Rank Items' : '💰 High Price Items';
-            const description = reviewType === 'high_rank' 
-                ? 'Items with rank > 1.8M, on shelf 20+ days' 
-                : 'Items priced > $75, on shelf 45/70/100+ days';
-            
-            const ageBuckets = reviewType === 'high_rank' ? ['20+'] : ['45+', '70+', '100+'];
-            
-            // Status options based on review type
-            const statusOptions = reviewType === 'high_rank' 
-                ? [
-                    { value: 'pending', label: 'Pending (20+ days)' },
-                    { value: 'price_set_1', label: 'Price Set 1 (needs 50+ review)' },
-                    { value: 'price_set_2', label: 'Price Set 2 (needs 80+ review)' },
-                    { value: 'price_set_3', label: 'Price Set 3 (needs 100+ review)' },
-                    { value: 'price_set_4', label: 'Price Set 4' },
-                    { value: 'exported', label: 'Exported' }
-                ]
-                : [
-                    { value: 'pending', label: 'Pending (45+ days)' },
-                    { value: 'price_set_1', label: 'Price Set 1 (needs 70+ review)' },
-                    { value: 'price_set_2', label: 'Price Set 2 (needs 100+ review)' },
-                    { value: 'price_set_3', label: 'Price Set 3' },
-                    { value: 'exported', label: 'Exported' }
-                ];
-            
-            // Determine next status based on current status and review type
-            const getNextStatus = (item) => {
-                if (reviewType === 'high_rank') {
-                    // High rank: 20 → 50 → 80 → 100 days
-                    if (item.status === 'pending') return 'price_set_1';
-                    if (item.status === 'price_set_1' && item.age_days >= 50) return 'price_set_2';
-                    if (item.status === 'price_set_2' && item.age_days >= 80) return 'price_set_3';
-                    if (item.status === 'price_set_3' && item.age_days >= 100) return 'price_set_4';
-                    return item.status;
-                }
-                // High price: 45 → 70 → 100 days
-                if (item.status === 'pending') return 'price_set_1';
-                if (item.status === 'price_set_1' && item.age_days >= 70) return 'price_set_2';
-                if (item.status === 'price_set_2' && item.age_days >= 100) return 'price_set_3';
-                return item.status;
-            };
-            
-            // Get items that are ready for review based on status filter
-            const getReviewableStatuses = () => {
-                if (statusFilter === 'pending') return ['pending'];
-                if (statusFilter === 'price_set_1') return ['price_set_1'];
-                if (statusFilter === 'price_set_2') return ['price_set_2'];
-                if (statusFilter === 'price_set_3') return ['price_set_3'];
-                if (statusFilter === 'exported') return ['exported'];
-                return [statusFilter];
-            };
+            const title = reviewType === 'high_rank' ? '📈 High Rank Items' : '💵 High Price Items';
+            const description = reviewType === 'high_rank' ? 'Rank > 1.8M, shelf 20+ days (≤$70)' : 'Shelf 45/70/100+ days (≤$70)';
             
             const loadReviews = useCallback(async () => {
                 setLoading(true);
-                const data = await supabase.query('aging_reviews', { 
-                    filters: [
-                        { col: 'review_type', val: `eq.${reviewType}` }
-                    ],
-                    order: 'age_days.desc'
-                });
+                const data = await supabase.query('aging_reviews', { filters: [{ col: 'review_type', val: `eq.${reviewType}` }], order: 'age_days.desc' });
                 setReviews(data || []);
                 setLoading(false);
             }, [reviewType]);
             
             useEffect(() => { loadReviews(); }, [loadReviews]);
             
-            // Count items by status
-            const statusCounts = useMemo(() => {
-                const counts = {};
-                reviews.forEach(r => {
-                    counts[r.status] = (counts[r.status] || 0) + 1;
-                });
-                return counts;
-            }, [reviews]);
-            
-            // Filter reviews by status and other filters
             const filteredReviews = useMemo(() => {
-                return reviews.filter(r => {
-                    // Status filter
-                    if (statusFilter !== 'all' && r.status !== statusFilter) return false;
-                    
-                    // Filter by age readiness for next review
-                    if (reviewType === 'high_rank') {
-                        if (statusFilter === 'price_set_1' && r.age_days < 50) return false;
-                        if (statusFilter === 'price_set_2' && r.age_days < 80) return false;
-                        if (statusFilter === 'price_set_3' && r.age_days < 100) return false;
-                    } else {
-                        // High price
-                        if (statusFilter === 'price_set_1' && r.age_days < 70) return false;
-                        if (statusFilter === 'price_set_2' && r.age_days < 100) return false;
-                    }
-                    
-                    if (filters.ageBucket !== 'all' && r.age_bucket !== filters.ageBucket) return false;
-                    if (filters.rankMin && r.sales_rank < parseInt(filters.rankMin)) return false;
-                    if (filters.rankMax && r.sales_rank > parseInt(filters.rankMax)) return false;
-                    if (filters.priceMin && r.current_price < parseFloat(filters.priceMin)) return false;
-                    if (filters.priceMax && r.current_price > parseFloat(filters.priceMax)) return false;
-                    return true;
-                });
-            }, [reviews, statusFilter, filters, reviewType]);
+                let result = reviews;
+                if (hideRecent) result = result.filter(r => !isRecentlyExported(r.exported_at));
+                if (statusFilter !== 'all') result = result.filter(r => r.status === statusFilter);
+                return result;
+            }, [reviews, statusFilter, hideRecent]);
             
-            const calculateReducedPrice = (item) => {
-                // Use the last set price as base, or current_price if first time
-                const basePrice = item.approved_price || item.current_price || 0;
-                const floor = item.floor_price || 0;
-                const reduction = profitReduction / 100;
-                
-                const referralFee = settings?.amazon_referral_fee || 0.15;
-                const fixedFee = settings?.amazon_fixed_fee || 1.80;
-                const shipping = 2.64;
-                
-                const currentNet = basePrice * (1 - referralFee) - fixedFee;
-                const currentProfit = currentNet - shipping;
-                
-                const newProfit = currentProfit * (1 - reduction);
-                const newNet = newProfit + shipping + fixedFee;
-                const newPrice = newNet / (1 - referralFee);
-                
-                return Math.max(Math.round(newPrice * 100) / 100, floor);
-            };
+            const recentCount = reviews.filter(r => isRecentlyExported(r.exported_at)).length;
             
-            const getNewPrice = (item) => {
-                if (editedPrices[item.id] !== undefined && editedPrices[item.id] !== '') {
-                    return parseFloat(editedPrices[item.id]) || 0;
-                }
-                return calculateReducedPrice(item);
-            };
-            
-            const isPriceBelowFloor = (item) => {
-                return getNewPrice(item) < (item.floor_price || 0);
-            };
-            
-            const toggleSelect = (id) => {
-                const newSet = new Set(selectedIds);
-                if (newSet.has(id)) newSet.delete(id);
-                else newSet.add(id);
-                setSelectedIds(newSet);
-            };
-            
-            const toggleSelectAll = () => {
-                if (selectedIds.size === filteredReviews.length) {
-                    setSelectedIds(new Set());
-                } else {
-                    setSelectedIds(new Set(filteredReviews.map(r => r.id)));
-                }
-            };
-            
-            const applyProfitReduction = () => {
-                const newPrices = {};
-                filteredReviews.forEach(item => {
-                    newPrices[item.id] = calculateReducedPrice(item).toFixed(2);
-                });
-                setEditedPrices(prev => ({ ...prev, ...newPrices }));
-            };
-            
-            const handleBatchApprove = async () => {
-                const itemsToApprove = filteredReviews.filter(r => selectedIds.has(r.id));
-                if (itemsToApprove.length === 0) {
-                    alert('No items selected');
-                    return;
-                }
-                
-                const belowFloor = itemsToApprove.filter(r => isPriceBelowFloor(r));
-                if (belowFloor.length > 0) {
-                    alert(`${belowFloor.length} item(s) have prices below floor. Please fix before approving.`);
-                    return;
-                }
-                
-                const now = new Date().toISOString();
-                
-                for (const item of itemsToApprove) {
-                    const price = getNewPrice(item);
-                    const nextStatus = getNextStatus(item);
-                    
-                    // Build update object based on which price set we're recording
-                    const updateData = {
-                        approved_price: price,
-                        profit_reduction_pct: profitReduction,
-                        status: nextStatus,
-                        reviewed_at: now
-                    };
-                    
-                    // Record price history based on status transition
-                    if (item.status === 'pending') {
-                        updateData.price_set_1_price = price;
-                        updateData.price_set_1_date = now;
-                        updateData.price_set_1_reduction_pct = profitReduction;
-                    } else if (item.status === 'price_set_1') {
-                        updateData.price_set_2_price = price;
-                        updateData.price_set_2_date = now;
-                        updateData.price_set_2_reduction_pct = profitReduction;
-                    } else if (item.status === 'price_set_2') {
-                        updateData.price_set_3_price = price;
-                        updateData.price_set_3_date = now;
-                        updateData.price_set_3_reduction_pct = profitReduction;
-                    } else if (item.status === 'price_set_3') {
-                        updateData.price_set_4_price = price;
-                        updateData.price_set_4_date = now;
-                        updateData.price_set_4_reduction_pct = profitReduction;
-                    }
-                    
-                    await supabase.update('aging_reviews', item.id, updateData);
-                }
-                
-                setSelectedIds(new Set());
-                setEditedPrices({});
-                loadReviews();
-                if (onRefresh) onRefresh();
-                
-                alert(`${itemsToApprove.length} items updated to ${getNextStatus(itemsToApprove[0])}`);
-            };
-            
-            const handleExport = async () => {
-                // Get all price_set items (not pending, not exported)
-                const toExport = reviews.filter(r => 
-                    r.status.startsWith('price_set') && r.approved_price
-                );
-                
-                if (toExport.length === 0) {
-                    alert('No items ready to export');
-                    return;
-                }
-                
-                const dateTag = exportDateTag();
-                const csvLines = ['ASIN,MIN,MAX,TAGS'];
-                toExport.forEach(item => {
-                    // Use ="ASIN" format to preserve leading zeros in Excel
-                    csvLines.push(`="${item.asin}",,${item.approved_price.toFixed(2)},${dateTag}_${reviewType.toUpperCase()}_${item.status.toUpperCase()}`);
-                });
-                
-                const blob = new Blob([csvLines.join('\n')], { type: 'text/csv' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `aging_export_${reviewType}_${dateTag}.csv`;
-                a.click();
-                URL.revokeObjectURL(url);
-                
-                // Mark as exported
-                for (const item of toExport) {
-                    await supabase.update('aging_reviews', item.id, {
-                        status: 'exported',
-                        exported_at: new Date().toISOString()
-                    });
-                }
-                
-                loadReviews();
-                alert(`Exported ${toExport.length} items`);
-            };
-            
-            const readyToExportCount = reviews.filter(r => r.status.startsWith('price_set') && r.approved_price).length;
-            
-            // Get status label with color
-            const getStatusBadge = (status) => {
-                const colors = {
-                    'pending': 'badge-yellow',
-                    'price_set_1': 'badge-blue',
-                    'price_set_2': 'badge-purple',
-                    'price_set_3': 'badge-orange',
-                    'price_set_4': 'badge-green',
-                    'exported': 'badge-green'
-                };
-                const labels = {
-                    'pending': 'Pending',
-                    'price_set_1': 'Price 1',
-                    'price_set_2': 'Price 2',
-                    'price_set_3': 'Price 3',
-                    'price_set_4': 'Price 4',
-                    'exported': 'Exported'
-                };
-                return <span className={`badge ${colors[status] || 'badge-yellow'}`}>{labels[status] || status}</span>;
-            };
+            if (loading) return <div style={{textAlign:'center',padding:40,color:'var(--text-dim)'}}>Loading...</div>;
             
             return (
-                <div>
-                    <div style={{marginBottom:16}}>
-                        <h3 style={{margin:'0 0 4px',fontSize:16}}>{title}</h3>
-                        <p style={{margin:0,fontSize:12,color:'var(--text-dim)'}}>{description}</p>
-                    </div>
+                <div className="card" style={{padding:20}}>
+                    <div style={{marginBottom:20}}><h3 style={{margin:'0 0 8px',fontSize:16}}>{title}</h3><p style={{margin:0,fontSize:12,color:'var(--text-dim)'}}>{description}</p></div>
                     
-                    {/* Status tabs */}
-                    <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
-                        {statusOptions.map(opt => (
-                            <button 
-                                key={opt.value}
-                                className={statusFilter === opt.value ? 'btn-primary btn-small' : 'btn-secondary btn-small'}
-                                onClick={() => { setStatusFilter(opt.value); setSelectedIds(new Set()); }}
-                            >
-                                {opt.label} ({statusCounts[opt.value] || 0})
-                            </button>
-                        ))}
+                    <div style={{display:'flex',gap:12,alignItems:'center',marginBottom:16,flexWrap:'wrap'}}>
+                        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={{minWidth:180}}>
+                            <option value="pending">Pending ({reviews.filter(r => r.status === 'pending').length})</option>
+                            <option value="all">All ({reviews.length})</option>
+                        </select>
+                        
+                        <div style={{display:'flex',alignItems:'center',gap:8}}>
+                            <span style={{fontSize:12,color:'var(--text-dim)'}}>Hide exported (30d)</span>
+                            <div className={`toggle ${hideRecent ? 'active' : ''}`} onClick={() => setHideRecent(!hideRecent)}></div>
+                            {recentCount > 0 && <span style={{fontSize:11,color:'var(--text-dim)'}}>({recentCount} hidden)</span>}
+                        </div>
+                        
                         <div style={{flex:1}}></div>
-                        {readyToExportCount > 0 && (
-                            <button className="btn-success btn-small" onClick={handleExport}>
-                                📤 Export All Price Set ({readyToExportCount})
-                            </button>
-                        )}
-                    </div>
-                    
-                    <div className="card" style={{overflow:'hidden'}}>
-                        <div style={{padding:16,borderBottom:'1px solid var(--border)',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
-                            <select value={filters.ageBucket} onChange={e => setFilters({...filters, ageBucket: e.target.value})} style={{minWidth:100}}>
-                                <option value="all">All Ages</option>
-                                {ageBuckets.map(b => <option key={b} value={b}>{b} days</option>)}
-                            </select>
-                            
-                            <div style={{display:'flex',alignItems:'center',gap:4}}>
-                                <span style={{fontSize:11,color:'var(--text-dim)'}}>Rank:</span>
-                                <input type="number" placeholder="Min" style={{width:80}} value={filters.rankMin} onChange={e => setFilters({...filters, rankMin: e.target.value})} />
-                                <span>-</span>
-                                <input type="number" placeholder="Max" style={{width:80}} value={filters.rankMax} onChange={e => setFilters({...filters, rankMax: e.target.value})} />
-                            </div>
-                            
-                            <div style={{display:'flex',alignItems:'center',gap:4}}>
-                                <span style={{fontSize:11,color:'var(--text-dim)'}}>Price:</span>
-                                <input type="number" placeholder="Min" style={{width:70}} value={filters.priceMin} onChange={e => setFilters({...filters, priceMin: e.target.value})} />
-                                <span>-</span>
-                                <input type="number" placeholder="Max" style={{width:70}} value={filters.priceMax} onChange={e => setFilters({...filters, priceMax: e.target.value})} />
-                            </div>
-                            
-                            <div style={{flex:1}}></div>
-                            
-                            <span style={{fontSize:12,color:'var(--text-dim)'}}>{filteredReviews.length} items</span>
+                        
+                        <div style={{display:'flex',alignItems:'center',gap:8}}>
+                            <span style={{fontSize:12,color:'var(--text-dim)'}}>Profit Reduction:</span>
+                            <input type="number" className="mono" style={{width:60,padding:'4px 8px',fontSize:12,textAlign:'right'}} value={profitReduction} onChange={e => setProfitReduction(parseFloat(e.target.value) || 0)} />
+                            <span style={{fontSize:12,color:'var(--text-dim)'}}>%</span>
                         </div>
                         
-                        <div style={{padding:12,borderBottom:'1px solid var(--border)',background:'var(--bg-hover)',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
-                            <div style={{display:'flex',alignItems:'center',gap:8}}>
-                                <span style={{fontSize:12}}>Profit Reduction:</span>
-                                <input type="number" min="0" max="100" style={{width:60}} value={profitReduction} onChange={e => setProfitReduction(parseInt(e.target.value) || 0)} />
-                                <span style={{fontSize:12}}>%</span>
-                                <button className="btn-small btn-primary" onClick={applyProfitReduction}>Apply to Page</button>
-                            </div>
-                            
-                            <div style={{flex:1}}></div>
-                            
-                            <span style={{fontSize:13,color:'var(--text-dim)'}}>{selectedIds.size} selected</span>
-                            
-                            <button className="btn-success btn-small" onClick={handleBatchApprove} disabled={selectedIds.size === 0} style={{opacity: selectedIds.size === 0 ? 0.5 : 1}}>
-                                ✓ Set Price ({selectedIds.size})
-                            </button>
-                        </div>
-                        
-                        <div style={{padding:8,borderBottom:'1px solid var(--border)',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                            <span style={{fontSize:12,color:'var(--text-dim)'}}>{filteredReviews.length} items</span>
-                            <button className="btn-secondary btn-small" onClick={loadReviews}>↻ Refresh</button>
-                        </div>
-                        
-                        <div style={{overflowX:'auto',maxHeight:'70vh',overflowY:'auto'}}>
-                            {loading ? <div style={{padding:40,textAlign:'center',color:'var(--text-dim)'}}>Loading...</div> : (
-                                <table>
-                                    <thead style={{position:'sticky',top:0,background:'var(--bg-card)',zIndex:1}}>
-                                        <tr>
-                                            <th style={{width:40}}>
-                                                <input type="checkbox" className="checkbox" checked={selectedIds.size === filteredReviews.length && filteredReviews.length > 0} onChange={toggleSelectAll} />
-                                            </th>
-                                            <th>ASIN</th>
-                                            <th>Title</th>
-                                            <th>Status</th>
-                                            <th>Age</th>
-                                            <th>Rank</th>
-                                            <th>Original</th>
-                                            <th>Last Price</th>
-                                            <th>Floor</th>
-                                            <th style={{width:100}}>New Price</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {filteredReviews.map(r => {
-                                            const isSelected = selectedIds.has(r.id);
-                                            const hasEdited = editedPrices[r.id] !== undefined;
-                                            const belowFloor = isPriceBelowFloor(r);
-                                            const lastPrice = r.approved_price || r.current_price;
-                                            return (
-                                                <tr key={r.id} className={isSelected ? 'selected' : ''}>
-                                                    <td><input type="checkbox" className="checkbox" checked={isSelected} onChange={() => toggleSelect(r.id)} /></td>
-                                                    <td className="mono" style={{fontSize:11}}>
-                                                        <a href={`http://lkdev.com/a.php?a=${r.asin}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--blue)',textDecoration:'none'}}>{r.asin}</a>
-                                                    </td>
-                                                    <td style={{maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:12}}>{r.title || '—'}</td>
-                                                    <td>{getStatusBadge(r.status)}</td>
-                                                    <td><span className="badge badge-orange">{r.age_days}d</span></td>
-                                                    <td className="mono" style={{fontSize:11}}>{r.sales_rank?.toLocaleString() || '—'}</td>
-                                                    <td className="mono" style={{fontSize:12,color:'var(--text-dim)'}}>{fmt(r.current_price)}</td>
-                                                    <td className="mono" style={{fontSize:12,color: r.approved_price ? 'var(--blue)' : 'var(--text-dim)'}}>{fmt(lastPrice)}</td>
-                                                    <td className="mono" style={{fontSize:12,color:'var(--yellow)'}}>{fmt(r.floor_price)}</td>
-                                                    <td>
-                                                        <input 
-                                                            type="number" 
-                                                            step="0.01" 
-                                                            className="mono"
-                                                            style={{
-                                                                width:'80px',
-                                                                padding:'4px 8px',
-                                                                fontSize:12,
-                                                                textAlign:'right',
-                                                                background: belowFloor ? 'rgba(239,68,68,0.1)' : hasEdited ? 'var(--bg-dark)' : 'var(--bg-hover)',
-                                                                borderColor: belowFloor ? 'var(--red)' : hasEdited ? 'var(--blue)' : 'var(--border)'
-                                                            }}
-                                                            value={editedPrices[r.id] || ''}
-                                                            placeholder={calculateReducedPrice(r).toFixed(2)}
-                                                            onChange={e => setEditedPrices(prev => ({...prev, [r.id]: e.target.value}))}
-                                                        />
-                                                    </td>
-                                                </tr>
-                                            );
-                                        })}
-                                        {filteredReviews.length === 0 && <tr><td colSpan={10} style={{textAlign:'center',padding:40,color:'var(--text-dim)'}}>No items found</td></tr>}
-                                    </tbody>
-                                </table>
-                            )}
-                        </div>
-                    </div>
-                </div>
-            );
-        }
-
-        // ========== AGING REVIEWS TAB ==========
-        function AgingReviewsTab({ onRefresh, settings }) {
-            const [agingItems, setAgingItems] = useState([]);
-            const [category, setCategory] = useState('high_rank');
-            const [selectedIds, setSelectedIds] = useState(new Set());
-            const [profitReduction, setProfitReduction] = useState(25);
-            const [loading, setLoading] = useState(true);
-            const [page, setPage] = useState(0);
-            const [priceFilter, setPriceFilter] = useState({ min: '', max: '' });
-            const [rankFilter, setRankFilter] = useState({ min: '', max: '' });
-            const [ageFilter, setAgeFilter] = useState({ min: '', max: '' });
-            const pageSize = 50;
-            
-            const loadAgingItems = useCallback(async () => {
-                setLoading(true);
-                const items = await supabase.query('aging_reviews', { 
-                    order: 'age_days.desc',
-                    filters: [{ col: 'status', val: 'eq.pending' }]
-                });
-                setAgingItems(items);
-                setLoading(false);
-            }, []);
-            
-            useEffect(() => { loadAgingItems(); }, [loadAgingItems]);
-            useEffect(() => { setPage(0); setSelectedIds(new Set()); }, [category]);
-            
-            const filteredItems = useMemo(() => {
-                let items = agingItems.filter(i => i.category === category);
-                
-                // Apply filters
-                if (priceFilter.min) items = items.filter(i => i.current_price >= parseFloat(priceFilter.min));
-                if (priceFilter.max) items = items.filter(i => i.current_price <= parseFloat(priceFilter.max));
-                if (rankFilter.min) items = items.filter(i => i.sales_rank >= parseInt(rankFilter.min));
-                if (rankFilter.max) items = items.filter(i => i.sales_rank <= parseInt(rankFilter.max));
-                if (ageFilter.min) items = items.filter(i => i.age_days >= parseInt(ageFilter.min));
-                if (ageFilter.max) items = items.filter(i => i.age_days <= parseInt(ageFilter.max));
-                
-                return items;
-            }, [agingItems, category, priceFilter, rankFilter, ageFilter]);
-            
-            const categoryCounts = useMemo(() => ({
-                high_rank: agingItems.filter(i => i.category === 'high_rank').length,
-                high_price_45: agingItems.filter(i => i.category === 'high_price_45').length,
-                high_price_70: agingItems.filter(i => i.category === 'high_price_70').length,
-                high_price_100: agingItems.filter(i => i.category === 'high_price_100').length,
-            }), [agingItems]);
-            
-            const totalPages = Math.ceil(filteredItems.length / pageSize);
-            const pagedItems = filteredItems.slice(page * pageSize, (page + 1) * pageSize);
-            
-            const calculateNewPrice = (item, reductionPct) => {
-                const minProfit = settings?.min_profit || 2.50;
-                const referralFee = settings?.amazon_referral_fee || 0.15;
-                const fixedFee = settings?.amazon_fixed_fee || 1.80;
-                const shippingCost = settings?.shipping_brackets?.[0]?.cost || 2.64;
-                
-                // Calculate floor price
-                const minNet = fixedFee + shippingCost + (minProfit * (1 - reductionPct/100));
-                const floorPrice = minNet / (1 - referralFee);
-                
-                // Reduce current price by the reduction percentage
-                const reducedPrice = item.current_price * (1 - reductionPct/100);
-                
-                // Return the higher of reduced price or floor
-                return Math.max(reducedPrice, floorPrice);
-            };
-            
-            const toggleSelect = (id) => {
-                const newSet = new Set(selectedIds);
-                if (newSet.has(id)) newSet.delete(id);
-                else newSet.add(id);
-                setSelectedIds(newSet);
-            };
-            
-            const toggleSelectAll = () => {
-                if (selectedIds.size === pagedItems.length) {
-                    setSelectedIds(new Set());
-                } else {
-                    setSelectedIds(new Set(pagedItems.map(i => i.id)));
-                }
-            };
-            
-            const handleBatchApprove = async () => {
-                const itemsToApprove = pagedItems.filter(i => selectedIds.has(i.id));
-                if (itemsToApprove.length === 0) {
-                    alert('No items selected');
-                    return;
-                }
-                
-                for (const item of itemsToApprove) {
-                    const newPrice = calculateNewPrice(item, profitReduction);
-                    await supabase.update('aging_reviews', item.id, {
-                        suggested_price: newPrice,
-                        approved_price: newPrice,
-                        profit_reduction_pct: profitReduction,
-                        status: 'approved',
-                        approved_at: new Date().toISOString()
-                    });
-                }
-                
-                setSelectedIds(new Set());
-                loadAgingItems();
-                alert(`${itemsToApprove.length} items approved with ${profitReduction}% profit reduction`);
-            };
-            
-            const categoryLabels = {
-                'high_rank': '📈 High Rank (>1.8M, >20 days)',
-                'high_price_45': '💰 High Price 45+ days',
-                'high_price_70': '💰 High Price 70+ days',
-                'high_price_100': '💰 High Price 100+ days'
-            };
-            
-            return (
-                <div>
-                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
-                        <h3 style={{margin:0,fontSize:16}}>📅 Aging Price Reviews</h3>
-                        <button className="btn-secondary" onClick={() => { loadAgingItems(); onRefresh(); }}>↻ Refresh</button>
+                        <button className="btn-secondary" onClick={loadReviews}>↻</button>
                     </div>
                     
-                    {/* Category Tabs */}
-                    <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
-                        {Object.entries(categoryLabels).map(([key, label]) => (
-                            <button 
-                                key={key}
-                                className={category === key ? 'btn-primary' : 'btn-secondary'}
-                                onClick={() => setCategory(key)}
-                                style={{fontSize:12}}
-                            >
-                                {label} ({categoryCounts[key]})
-                            </button>
-                        ))}
-                    </div>
-                    
-                    {/* Filters */}
-                    <div className="card" style={{padding:16,marginBottom:16}}>
-                        <div style={{display:'flex',gap:24,flexWrap:'wrap',alignItems:'flex-end'}}>
-                            <div>
-                                <label style={{display:'block',fontSize:11,color:'var(--text-dim)',marginBottom:4}}>Price Range ($)</label>
-                                <div style={{display:'flex',gap:4,alignItems:'center'}}>
-                                    <input type="number" placeholder="Min" style={{width:70,fontSize:12}} value={priceFilter.min} onChange={e => setPriceFilter(p => ({...p, min: e.target.value}))} />
-                                    <span>-</span>
-                                    <input type="number" placeholder="Max" style={{width:70,fontSize:12}} value={priceFilter.max} onChange={e => setPriceFilter(p => ({...p, max: e.target.value}))} />
-                                </div>
-                            </div>
-                            <div>
-                                <label style={{display:'block',fontSize:11,color:'var(--text-dim)',marginBottom:4}}>Rank Range</label>
-                                <div style={{display:'flex',gap:4,alignItems:'center'}}>
-                                    <input type="number" placeholder="Min" style={{width:90,fontSize:12}} value={rankFilter.min} onChange={e => setRankFilter(p => ({...p, min: e.target.value}))} />
-                                    <span>-</span>
-                                    <input type="number" placeholder="Max" style={{width:90,fontSize:12}} value={rankFilter.max} onChange={e => setRankFilter(p => ({...p, max: e.target.value}))} />
-                                </div>
-                            </div>
-                            <div>
-                                <label style={{display:'block',fontSize:11,color:'var(--text-dim)',marginBottom:4}}>Age (days)</label>
-                                <div style={{display:'flex',gap:4,alignItems:'center'}}>
-                                    <input type="number" placeholder="Min" style={{width:60,fontSize:12}} value={ageFilter.min} onChange={e => setAgeFilter(p => ({...p, min: e.target.value}))} />
-                                    <span>-</span>
-                                    <input type="number" placeholder="Max" style={{width:60,fontSize:12}} value={ageFilter.max} onChange={e => setAgeFilter(p => ({...p, max: e.target.value}))} />
-                                </div>
-                            </div>
-                            <div style={{borderLeft:'1px solid var(--border)',paddingLeft:24}}>
-                                <label style={{display:'block',fontSize:11,color:'var(--text-dim)',marginBottom:4}}>Profit Reduction %</label>
-                                <div style={{display:'flex',gap:8,alignItems:'center'}}>
-                                    <input type="number" min="0" max="100" style={{width:60,fontSize:12}} value={profitReduction} onChange={e => setProfitReduction(parseInt(e.target.value) || 0)} />
-                                    <span style={{fontSize:12,color:'var(--text-dim)'}}>%</span>
-                                </div>
-                            </div>
-                            <div>
-                                <span style={{fontSize:13,color:'var(--text-dim)'}}>{selectedIds.size} selected</span>
-                            </div>
-                            <button 
-                                className="btn-success" 
-                                onClick={handleBatchApprove}
-                                disabled={selectedIds.size === 0}
-                                style={{opacity: selectedIds.size === 0 ? 0.5 : 1}}
-                            >
-                                ✓ Approve Selected ({selectedIds.size})
-                            </button>
-                        </div>
-                    </div>
-                    
-                    {/* Table */}
-                    <div className="card" style={{overflow:'hidden'}}>
-                        <div style={{padding:12,borderBottom:'1px solid var(--border)',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                            <span style={{fontSize:13}}>{filteredItems.length} items</span>
-                            <div style={{display:'flex',alignItems:'center',gap:8}}>
-                                <button className="btn-secondary btn-small" onClick={() => setPage(p => Math.max(0, p-1))} disabled={page === 0}>←</button>
-                                <span style={{fontSize:12,color:'var(--text-dim)'}}>Page {page + 1} of {totalPages || 1}</span>
-                                <button className="btn-secondary btn-small" onClick={() => setPage(p => Math.min(totalPages - 1, p+1))} disabled={page >= totalPages - 1}>→</button>
-                            </div>
-                        </div>
-                        <div style={{overflowX:'auto',maxHeight:'50vh',overflowY:'auto'}}>
+                    {filteredReviews.length === 0 ? <div style={{textAlign:'center',padding:40,color:'var(--text-dim)'}}>No items</div> : (
+                        <div style={{overflowX:'auto',maxHeight:'60vh',overflowY:'auto'}}>
                             <table>
-                                <thead style={{position:'sticky',top:0,background:'var(--bg-card)',zIndex:1}}>
-                                    <tr>
-                                        <th style={{width:40}}>
-                                            <input type="checkbox" className="checkbox" checked={selectedIds.size === pagedItems.length && pagedItems.length > 0} onChange={toggleSelectAll} />
-                                        </th>
-                                        <th>ASIN</th>
-                                        <th>Title</th>
-                                        <th>Age</th>
-                                        <th>Rank</th>
-                                        <th>Current $</th>
-                                        <th>New $ (-{profitReduction}%)</th>
-                                        <th>Location</th>
-                                    </tr>
+                                <thead style={{position:'sticky',top:0,background:'var(--bg-card)'}}>
+                                    <tr><th style={{width:40}}><input type="checkbox" className="checkbox" /></th><th>ASIN</th><th>Title</th><th>Age</th><th>Current</th><th>Reduced</th><th style={{width:100}}>New</th><th>Actions</th></tr>
                                 </thead>
                                 <tbody>
-                                    {loading ? (
-                                        <tr><td colSpan={8} style={{textAlign:'center',padding:40,color:'var(--text-dim)'}}>Loading...</td></tr>
-                                    ) : pagedItems.map(item => {
-                                        const newPrice = calculateNewPrice(item, profitReduction);
-                                        const isSelected = selectedIds.has(item.id);
+                                    {filteredReviews.slice(0, 50).map(r => {
+                                        const reducedPrice = r.current_price * (1 - profitReduction / 100);
+                                        const wasExported = isRecentlyExported(r.exported_at);
                                         return (
-                                            <tr key={item.id} className={isSelected ? 'selected' : ''}>
-                                                <td><input type="checkbox" className="checkbox" checked={isSelected} onChange={() => toggleSelect(item.id)} /></td>
-                                                <td className="mono" style={{fontSize:11}}>
-                                                    <a href={`http://lkdev.com/a.php?a=${item.asin}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--blue)',textDecoration:'none'}}>{item.asin}</a>
-                                                </td>
-                                                <td style={{maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:12}}>{item.title || '—'}</td>
-                                                <td className="mono" style={{fontSize:12,color: item.age_days > 90 ? 'var(--red)' : item.age_days > 60 ? 'var(--orange)' : 'var(--text)'}}>{item.age_days}d</td>
-                                                <td className="mono" style={{fontSize:11,color:'var(--text-dim)'}}>{item.sales_rank?.toLocaleString() || '—'}</td>
-                                                <td className="mono" style={{fontSize:12}}>${item.current_price?.toFixed(2)}</td>
-                                                <td className="mono" style={{fontSize:12,color:'var(--green)',fontWeight:600}}>${newPrice.toFixed(2)}</td>
-                                                <td style={{fontSize:11,color:'var(--text-dim)'}}>{item.location || '—'}</td>
+                                            <tr key={r.id} style={{opacity: wasExported ? 0.6 : 1}}>
+                                                <td><input type="checkbox" className="checkbox" /></td>
+                                                <td className="mono" style={{fontSize:11}}><a href={`http://lkdev.com/a.php?a=${r.asin}`} target="_blank" style={{color:'var(--blue)',textDecoration:'none'}}>{r.asin}</a></td>
+                                                <td style={{maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:12}}>{r.title || '—'}</td>
+                                                <td className="mono" style={{fontSize:12}}>{r.age_days}d</td>
+                                                <td className="mono" style={{fontSize:12}}>{fmt(r.current_price)}</td>
+                                                <td className="mono" style={{fontSize:12,color:'var(--yellow)'}}>{fmt(reducedPrice)}</td>
+                                                <td><input type="number" step="0.01" className="mono" style={{width:'80px',padding:'4px 8px',fontSize:12,textAlign:'right'}} placeholder={reducedPrice.toFixed(2)} value={editedPrices[r.asin] || ''} onChange={e => setEditedPrices(prev => ({...prev, [r.asin]: e.target.value}))} /></td>
+                                                <td><button className="btn-small btn-success">✓</button></td>
                                             </tr>
                                         );
                                     })}
-                                    {!loading && pagedItems.length === 0 && (
-                                        <tr><td colSpan={8} style={{textAlign:'center',padding:40,color:'var(--text-dim)'}}>No items in this category</td></tr>
-                                    )}
                                 </tbody>
                             </table>
+                            {filteredReviews.length > 50 && <div style={{padding:12,textAlign:'center',color:'var(--text-dim)',fontSize:12}}>Showing 50 of {filteredReviews.length}</div>}
                         </div>
-                    </div>
-                </div>
-            );
-        }
-
-        // ========== EXPORT HISTORY TAB ==========
-        function ExportHistoryTab({ onRefresh }) {
-            const [exports, setExports] = useState([]);
-            const [exportItems, setExportItems] = useState([]);
-            const [selectedExport, setSelectedExport] = useState(null);
-            const [loading, setLoading] = useState(true);
-            
-            const loadExports = useCallback(async () => {
-                setLoading(true);
-                const data = await supabase.query('price_exports', { order: 'exported_at.desc' });
-                setExports(data || []);
-                setLoading(false);
-            }, []);
-            
-            useEffect(() => { loadExports(); }, [loadExports]);
-            
-            const loadExportItems = async (exportId) => {
-                const items = await supabase.query('price_export_items', {
-                    filters: [{ col: 'export_id', val: `eq.${exportId}` }],
-                    order: 'asin.asc'
-                });
-                setExportItems(items || []);
-                setSelectedExport(exportId);
-            };
-            
-            const formatDate = (dateStr) => {
-                if (!dateStr) return '—';
-                return new Date(dateStr).toLocaleString();
-            };
-            
-            return (
-                <div>
-                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
-                        <h3 style={{margin:0,fontSize:16}}>📦 Export History</h3>
-                        <button className="btn-secondary btn-small" onClick={loadExports}>↻ Refresh</button>
-                    </div>
-                    
-                    <div style={{display:'grid',gridTemplateColumns:'300px 1fr',gap:16}}>
-                        {/* Exports List */}
-                        <div className="card" style={{overflow:'hidden'}}>
-                            <div style={{padding:12,borderBottom:'1px solid var(--border)',fontWeight:600,fontSize:13}}>
-                                Exports ({exports.length})
-                            </div>
-                            <div style={{maxHeight:'60vh',overflowY:'auto'}}>
-                                {loading ? (
-                                    <div style={{padding:20,textAlign:'center',color:'var(--text-dim)'}}>Loading...</div>
-                                ) : exports.length === 0 ? (
-                                    <div style={{padding:20,textAlign:'center',color:'var(--text-dim)'}}>No exports yet</div>
-                                ) : exports.map(exp => (
-                                    <div 
-                                        key={exp.id}
-                                        onClick={() => loadExportItems(exp.id)}
-                                        style={{
-                                            padding:'12px 16px',
-                                            borderBottom:'1px solid var(--border)',
-                                            cursor:'pointer',
-                                            background: selectedExport === exp.id ? 'var(--bg-hover)' : 'transparent'
-                                        }}
-                                    >
-                                        <div style={{fontSize:13,fontWeight:500}}>{formatDate(exp.exported_at)}</div>
-                                        <div style={{fontSize:12,color:'var(--text-dim)',marginTop:4}}>
-                                            {exp.item_count} items • {exp.exported_by || 'dashboard'}
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                        
-                        {/* Export Items */}
-                        <div className="card" style={{overflow:'hidden'}}>
-                            <div style={{padding:12,borderBottom:'1px solid var(--border)',fontWeight:600,fontSize:13}}>
-                                {selectedExport ? `Items (${exportItems.length})` : 'Select an export to view items'}
-                            </div>
-                            <div style={{maxHeight:'60vh',overflowY:'auto'}}>
-                                {!selectedExport ? (
-                                    <div style={{padding:40,textAlign:'center',color:'var(--text-dim)'}}>← Select an export from the list</div>
-                                ) : exportItems.length === 0 ? (
-                                    <div style={{padding:40,textAlign:'center',color:'var(--text-dim)'}}>No items in this export</div>
-                                ) : (
-                                    <table>
-                                        <thead>
-                                            <tr>
-                                                <th>ASIN</th>
-                                                <th>Old Price</th>
-                                                <th>New Price</th>
-                                                <th>Source</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {exportItems.map(item => (
-                                                <tr key={item.id}>
-                                                    <td className="mono" style={{fontSize:11}}>
-                                                        <a href={`http://lkdev.com/a.php?a=${item.asin}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--blue)',textDecoration:'none'}}>{item.asin}</a>
-                                                    </td>
-                                                    <td className="mono" style={{fontSize:12,color:'var(--text-dim)'}}>{item.old_price ? `$${item.old_price.toFixed(2)}` : '—'}</td>
-                                                    <td className="mono" style={{fontSize:12,color:'var(--green)'}}>${item.new_price?.toFixed(2)}</td>
-                                                    <td style={{fontSize:11,color:'var(--text-dim)'}}>{item.source || '—'}</td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            );
-        }
-
-        // ========== SALES TRACKING TAB ==========
-        function SalesTrackingTab({ onRefresh }) {
-            const [effectiveness, setEffectiveness] = useState([]);
-            const [pendingSales, setPendingSales] = useState([]);
-            const [loading, setLoading] = useState(true);
-            
-            const loadData = useCallback(async () => {
-                setLoading(true);
-                
-                // Load export effectiveness view
-                const effData = await supabase.query('v_export_effectiveness', { order: 'export_date.desc' });
-                setEffectiveness(effData || []);
-                
-                // Load pending sales view
-                const pendingData = await supabase.query('v_pending_sales', { order: 'exported_at.asc' });
-                setPendingSales(pendingData || []);
-                
-                setLoading(false);
-            }, []);
-            
-            useEffect(() => { loadData(); }, [loadData]);
-            
-            const handleMatchSales = async () => {
-                try {
-                    const result = await supabase.rpc('match_sales_to_exports');
-                    alert(`Matched ${result?.length || 0} sales to exports`);
-                    loadData();
-                    if (onRefresh) onRefresh();
-                } catch (err) {
-                    console.error('Match error:', err);
-                    alert('Match failed - make sure you have the match_sales_to_exports function');
-                }
-            };
-            
-            const formatDate = (dateStr) => {
-                if (!dateStr) return '—';
-                return new Date(dateStr).toLocaleDateString();
-            };
-            
-            const totalSold = effectiveness.reduce((sum, e) => sum + (e.items_sold || 0), 0);
-            const totalExported = effectiveness.reduce((sum, e) => sum + (e.items_tracked || 0), 0);
-            const overallSellThrough = totalExported > 0 ? Math.round((totalSold / totalExported) * 100) : 0;
-            const avgDaysOverall = effectiveness.filter(e => e.avg_days_to_sell).length > 0
-                ? Math.round(effectiveness.reduce((sum, e) => sum + (e.avg_days_to_sell || 0), 0) / effectiveness.filter(e => e.avg_days_to_sell).length)
-                : null;
-            
-            return (
-                <div>
-                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
-                        <h3 style={{margin:0,fontSize:16}}>📊 Sales Tracking & Effectiveness</h3>
-                        <div style={{display:'flex',gap:8}}>
-                            <button className="btn-secondary btn-small" onClick={loadData}>↻ Refresh</button>
-                            <button className="btn-primary btn-small" onClick={handleMatchSales}>🔄 Match Sales Data</button>
-                        </div>
-                    </div>
-                    
-                    {/* Summary Stats */}
-                    <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:24}}>
-                        <div className="card stat-card">
-                            <div className="stat-value" style={{color:'var(--blue)'}}>{totalExported}</div>
-                            <div className="stat-label">Items Exported</div>
-                        </div>
-                        <div className="card stat-card">
-                            <div className="stat-value" style={{color:'var(--green)'}}>{totalSold}</div>
-                            <div className="stat-label">Items Sold</div>
-                        </div>
-                        <div className="card stat-card">
-                            <div className="stat-value" style={{color:'var(--purple)'}}>{overallSellThrough}%</div>
-                            <div className="stat-label">Sell-Through Rate</div>
-                        </div>
-                        <div className="card stat-card">
-                            <div className="stat-value" style={{color:'var(--orange)'}}>{avgDaysOverall || '—'}</div>
-                            <div className="stat-label">Avg Days to Sell</div>
-                        </div>
-                    </div>
-                    
-                    {loading ? (
-                        <div style={{textAlign:'center',padding:40,color:'var(--text-dim)'}}>Loading...</div>
-                    ) : (
-                        <>
-                            {/* Export Effectiveness by Batch */}
-                            <h4 style={{margin:'0 0 12px',fontSize:14}}>Export Batches</h4>
-                            <div className="card" style={{overflow:'hidden',marginBottom:24}}>
-                                <table>
-                                    <thead>
-                                        <tr>
-                                            <th>Export Date</th>
-                                            <th>Items</th>
-                                            <th>Sold</th>
-                                            <th>Sell-Through</th>
-                                            <th>Avg Days</th>
-                                            <th>Revenue</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {effectiveness.map(e => (
-                                            <tr key={e.export_id}>
-                                                <td style={{fontSize:12}}>{formatDate(e.export_date)}</td>
-                                                <td className="mono">{e.items_tracked || 0}</td>
-                                                <td className="mono" style={{color:'var(--green)'}}>{e.items_sold || 0}</td>
-                                                <td>
-                                                    <span className={`badge ${e.sell_through_pct > 50 ? 'badge-green' : e.sell_through_pct > 25 ? 'badge-yellow' : 'badge-red'}`}>
-                                                        {e.sell_through_pct || 0}%
-                                                    </span>
-                                                </td>
-                                                <td className="mono">{e.avg_days_to_sell ? `${e.avg_days_to_sell}d` : '—'}</td>
-                                                <td className="mono" style={{color:'var(--green)'}}>{e.total_revenue ? `$${e.total_revenue.toFixed(2)}` : '—'}</td>
-                                            </tr>
-                                        ))}
-                                        {effectiveness.length === 0 && (
-                                            <tr><td colSpan={6} style={{textAlign:'center',padding:40,color:'var(--text-dim)'}}>No export data yet</td></tr>
-                                        )}
-                                    </tbody>
-                                </table>
-                            </div>
-                            
-                            {/* Pending Sales */}
-                            <h4 style={{margin:'0 0 12px',fontSize:14}}>Awaiting Sale ({pendingSales.length} items)</h4>
-                            <div className="card" style={{overflow:'hidden'}}>
-                                <div style={{maxHeight:'40vh',overflowY:'auto'}}>
-                                    <table>
-                                        <thead style={{position:'sticky',top:0,background:'var(--bg-card)'}}>
-                                            <tr>
-                                                <th>ASIN</th>
-                                                <th>Title</th>
-                                                <th>Export Price</th>
-                                                <th>Exported</th>
-                                                <th>Days Waiting</th>
-                                                <th>Status</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {pendingSales.map((item, idx) => (
-                                                <tr key={idx}>
-                                                    <td className="mono" style={{fontSize:11}}>
-                                                        <a href={`http://lkdev.com/a.php?a=${item.asin}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--blue)',textDecoration:'none'}}>{item.asin}</a>
-                                                    </td>
-                                                    <td style={{maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:12}}>{item.title || '—'}</td>
-                                                    <td className="mono" style={{fontSize:12}}>${item.export_price?.toFixed(2)}</td>
-                                                    <td style={{fontSize:12}}>{formatDate(item.exported_at)}</td>
-                                                    <td className="mono">{item.days_since_export || 0}</td>
-                                                    <td>
-                                                        <span className={`badge ${item.days_since_export > 30 ? 'badge-red' : item.days_since_export > 14 ? 'badge-yellow' : 'badge-blue'}`}>
-                                                            {item.days_since_export > 30 ? 'Stale' : item.days_since_export > 14 ? 'Aging' : 'Fresh'}
-                                                        </span>
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                            {pendingSales.length === 0 && (
-                                                <tr><td colSpan={6} style={{textAlign:'center',padding:40,color:'var(--text-dim)'}}>All exported items have sold! 🎉</td></tr>
-                                            )}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </div>
-                        </>
                     )}
                 </div>
             );
         }
 
-        function FlagForReviewModal({ isOpen, onClose, asin, onSubmit }) {
-            const [reason, setReason] = useState('employee_flag');
-            const [details, setDetails] = useState('');
-            const [flaggedBy, setFlaggedBy] = useState('');
-            const handleSubmit = () => { onSubmit({ asin, reason, details, flagged_by: flaggedBy }); onClose(); setDetails(''); setFlaggedBy(''); };
-            if (!isOpen) return null;
+        function SettingsTab({ settings, onSave }) {
+            const [localSettings, setLocalSettings] = useState(settings);
+            const [saving, setSaving] = useState(false);
+            const [message, setMessage] = useState('');
+            const [shippingCsv, setShippingCsv] = useState('');
+            useEffect(() => { setLocalSettings(settings); if (settings.shipping_brackets?.length > 0) setShippingCsv(settings.shipping_brackets.map(b => `${b.max_weight},${b.cost}`).join('\n')); }, [settings]);
+            const parseShippingCsv = (csv) => { const lines = csv.trim().split('\n'); const brackets = []; for (const line of lines) { const parts = line.split(','); if (parts.length >= 2) { const max_weight = parseFloat(parts[0].trim()); const cost = parseFloat(parts[1].trim().replace('$', '')); if (!isNaN(max_weight) && !isNaN(cost)) brackets.push({ max_weight, cost }); } } return brackets.sort((a, b) => a.max_weight - b.max_weight); };
+            const handleSave = async () => { setSaving(true); try { await onSave({ ...localSettings, shipping_brackets: parseShippingCsv(shippingCsv) }); setMessage('✓ Saved!'); setTimeout(() => setMessage(''), 3000); } catch { setMessage('✗ Error'); } setSaving(false); };
             return (
-                <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000}}>
-                    <div className="card" style={{padding:24,width:450}}>
-                        <h3 style={{margin:'0 0 16px',fontSize:18}}>🚩 Flag for Supervisor</h3>
-                        <div style={{marginBottom:16,padding:12,background:'var(--bg-hover)',borderRadius:6}}><div style={{fontSize:12,color:'var(--text-dim)'}}>ASIN</div><div className="mono" style={{fontSize:14}}>{asin}</div></div>
-                        <div style={{marginBottom:16}}><label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Your Name</label><input style={{width:'100%'}} value={flaggedBy} onChange={e => setFlaggedBy(e.target.value)} placeholder="Your name" /></div>
-                        <div style={{marginBottom:16}}><label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Reason</label><select style={{width:'100%'}} value={reason} onChange={e => setReason(e.target.value)}><option value="employee_flag">🚩 General Flag</option><option value="price_concern">💰 Price Concern</option><option value="manual_review">👁️ Needs Review</option><option value="other">📝 Other</option></select></div>
-                        <div style={{marginBottom:20}}><label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Details</label><textarea style={{width:'100%',height:80,background:'var(--bg-hover)',border:'1px solid var(--border)',borderRadius:6,padding:12,color:'var(--text)',fontSize:13,resize:'vertical'}} value={details} onChange={e => setDetails(e.target.value)} placeholder="Describe the issue..." /></div>
-                        <div style={{display:'flex',gap:10,justifyContent:'flex-end'}}><button className="btn-secondary" onClick={onClose}>Cancel</button><button className="btn-primary" onClick={handleSubmit} disabled={!flaggedBy}>Submit Flag</button></div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:24}}>
+                    <div className="card" style={{padding:20}}>
+                        <h3 style={{margin:'0 0 16px',fontSize:16}}>📦 Shipping Brackets</h3>
+                        <textarea style={{width:'100%',height:300,background:'var(--bg-hover)',border:'1px solid var(--border)',borderRadius:6,padding:12,color:'var(--text)',fontFamily:'JetBrains Mono',fontSize:12}} value={shippingCsv} onChange={e => setShippingCsv(e.target.value)} placeholder="weight,cost" />
+                    </div>
+                    <div>
+                        <div className="card" style={{padding:20,marginBottom:16}}>
+                            <h3 style={{margin:'0 0 16px',fontSize:16}}>💰 Pricing</h3>
+                            <div style={{marginBottom:16}}><label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Min Profit ($)</label><input type="number" step="0.25" className="settings-input mono" value={localSettings.min_profit || 2.50} onChange={e => setLocalSettings({...localSettings, min_profit: parseFloat(e.target.value) || 0})} /></div>
+                            <div style={{marginBottom:16}}><label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Referral Fee (%)</label><input type="number" step="0.01" className="settings-input mono" value={(localSettings.amazon_referral_fee || 0.15) * 100} onChange={e => setLocalSettings({...localSettings, amazon_referral_fee: (parseFloat(e.target.value) || 0) / 100})} /></div>
+                            <div><label style={{display:'block',marginBottom:6,fontSize:12,color:'var(--text-dim)'}}>Fixed Fee ($)</label><input type="number" step="0.10" className="settings-input mono" value={localSettings.amazon_fixed_fee || 1.80} onChange={e => setLocalSettings({...localSettings, amazon_fixed_fee: parseFloat(e.target.value) || 0})} /></div>
+                        </div>
+                        <div style={{display:'flex',gap:12,alignItems:'center'}}><button className="btn-success" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : '💾 Save'}</button>{message && <span style={{fontSize:13,color: message.startsWith('✓') ? 'var(--green)' : 'var(--red)'}}>{message}</span>}</div>
                     </div>
                 </div>
             );
         }
 
         function PricingLogicTab({ settings }) {
-            const minProfit = settings?.min_profit || 2.50;
-            const referralFee = settings?.amazon_referral_fee || 0.15;
-            const fixedFee = settings?.amazon_fixed_fee || 1.80;
-            const shippingCost = settings?.shipping_brackets?.[0]?.cost || 2.64;
-            const floor = ((fixedFee + shippingCost + minProfit) / (1 - referralFee)).toFixed(2);
-            
             return (
-                <div>
-                    <h3 style={{margin:'0 0 20px',fontSize:18}}>📖 Pricing Logic Documentation</h3>
-                    
-                    <div className="card" style={{padding:20,marginBottom:20}}>
-                        <h4 style={{margin:'0 0 12px',color:'var(--blue)'}}>🎯 Overview</h4>
-                        <p style={{margin:'0 0 12px',lineHeight:1.6}}>
-                            The pricing system uses Keepa data to calculate suggested prices for inventory items. 
-                            The key innovation is using <strong>Out of Stock percentage (OOS%)</strong> to determine 
-                            whether to trust average prices or use lowest prices.
-                        </p>
-                    </div>
-
-                    <div className="card" style={{padding:20,marginBottom:20}}>
-                        <h4 style={{margin:'0 0 12px',color:'var(--yellow)'}}>💰 Floor Price Calculation</h4>
-                        <p style={{margin:'0 0 12px',lineHeight:1.6}}>The floor price ensures minimum profit on every sale:</p>
-                        <div style={{background:'var(--bg-dark)',padding:16,borderRadius:8,fontFamily:'monospace',fontSize:13,marginBottom:12}}>
-                            Floor = (Fixed Fee + Shipping + Min Profit) ÷ (1 - Referral Fee)<br/>
-                            Floor = (${fixedFee} + ${shippingCost} + ${minProfit}) ÷ (1 - {referralFee})<br/>
-                            <strong style={{color:'var(--green)'}}>Floor = ${floor}</strong>
-                        </div>
-                        <p style={{margin:0,fontSize:13,color:'var(--text-dim)'}}>
-                            The suggested price will <strong>never</strong> go below the floor price.
-                        </p>
-                    </div>
-
-                    <div className="card" style={{padding:20,marginBottom:20}}>
-                        <h4 style={{margin:'0 0 12px',color:'var(--orange)'}}>📊 OOS-Based Pricing Strategy</h4>
-                        <p style={{margin:'0 0 16px',lineHeight:1.6}}>
-                            The 90-day Out of Stock percentage tells us how reliable the average prices are:
-                        </p>
-                        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
-                            <div style={{background:'var(--bg-dark)',padding:16,borderRadius:8}}>
-                                <div style={{fontWeight:600,marginBottom:8,color:'var(--orange)'}}>OOS ≥ 50% → Use LOWEST prices</div>
-                                <p style={{margin:0,fontSize:13,lineHeight:1.5}}>
-                                    Item is often out of stock, so average prices are unreliable 
-                                    (based on limited sales data). Price conservatively using lowest prices.
-                                </p>
-                                <div style={{marginTop:12,fontSize:12,color:'var(--text-dim)'}}>
-                                    Priority: lowest_used_365 → lowest_used+$3.99 → lowest_buy_box_used → 80% of lowest_new
-                                </div>
-                            </div>
-                            <div style={{background:'var(--bg-dark)',padding:16,borderRadius:8}}>
-                                <div style={{fontWeight:600,marginBottom:8,color:'var(--green)'}}>OOS &lt; 50% → Use AVERAGE prices</div>
-                                <p style={{margin:0,fontSize:13,lineHeight:1.5}}>
-                                    Item has good availability, so average prices reflect true market value.
-                                    Use 365-day average for pricing.
-                                </p>
-                                <div style={{marginTop:12,fontSize:12,color:'var(--text-dim)'}}>
-                                    Priority: avg_used_365 → lowest_used_365 → lowest_used+$3.99
-                                </div>
-                            </div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:24}}>
+                    <div className="card" style={{padding:20}}>
+                        <h3 style={{margin:'0 0 16px',fontSize:16}}>📊 Pricing Priority (v4)</h3>
+                        <ol style={{margin:0,paddingLeft:20,fontSize:13,lineHeight:1.8}}>
+                            <li><strong>180-day average</strong> - Most stable</li>
+                            <li><strong>90-day average</strong> - Recent trend</li>
+                            <li><strong>Current used + $3.99</strong> - Match competition</li>
+                            <li><strong>Lowest used + margin</strong> - Fallback</li>
+                            <li><strong>80% of lowest new</strong> - Last resort</li>
+                        </ol>
+                        <div style={{marginTop:16,padding:12,background:'var(--bg-hover)',borderRadius:6}}>
+                            <h4 style={{margin:'0 0 8px',fontSize:14,color:'var(--yellow)'}}>Price Caps</h4>
+                            <ul style={{margin:0,paddingLeft:20,fontSize:13}}><li>Never exceed <strong>2x current used</strong></li><li>Never exceed <strong>lowest new</strong></li></ul>
                         </div>
                     </div>
-
-                    <div className="card" style={{padding:20,marginBottom:20}}>
-                        <h4 style={{margin:'0 0 12px',color:'var(--red)'}}>🚫 Price Caps</h4>
-                        <p style={{margin:'0 0 12px',lineHeight:1.6}}>
-                            Regardless of the calculated price, these caps are always applied:
-                        </p>
+                    <div className="card" style={{padding:20}}>
+                        <h3 style={{margin:'0 0 16px',fontSize:16}}>📋 Tab Routing</h3>
                         <table style={{width:'100%',fontSize:13}}>
-                            <thead>
-                                <tr style={{background:'var(--bg-dark)'}}>
-                                    <th style={{padding:12,textAlign:'left'}}>Cap Type</th>
-                                    <th style={{padding:12,textAlign:'left'}}>Formula</th>
-                                    <th style={{padding:12,textAlign:'left'}}>Example</th>
-                                </tr>
-                            </thead>
+                            <thead><tr><th>Tab</th><th>Source</th><th>Keepa?</th><th>Criteria</th></tr></thead>
                             <tbody>
-                                <tr>
-                                    <td style={{padding:12,borderTop:'1px solid var(--border)'}}>Lowest Used Cap</td>
-                                    <td style={{padding:12,borderTop:'1px solid var(--border)',fontFamily:'monospace'}}>MIN(lowest×3, lowest+$10) + $3.99 shipping</td>
-                                    <td style={{padding:12,borderTop:'1px solid var(--border)'}}>$2.14 lowest → $6.13 with shipping → cap at $16.13</td>
-                                </tr>
-                                <tr>
-                                    <td style={{padding:12,borderTop:'1px solid var(--border)'}}>Lowest New Cap</td>
-                                    <td style={{padding:12,borderTop:'1px solid var(--border)',fontFamily:'monospace'}}>lowest_new × 1.5 (150%)</td>
-                                    <td style={{padding:12,borderTop:'1px solid var(--border)'}}>$9.99 lowest new → cap at $14.99</td>
-                                </tr>
+                                <tr><td>⚠️ Fringe</td><td>fringe_cases</td><td>✅</td><td>$100/$500 fallback</td></tr>
+                                <tr><td>💰 High Price Keepa</td><td>fringe_cases</td><td>✅</td><td>Price &gt;$70</td></tr>
+                                <tr><td>📈 High Rank</td><td>aging_reviews</td><td>❌</td><td>Rank &gt;1.8M, ≤$70</td></tr>
+                                <tr><td>💵 High Price</td><td>aging_reviews</td><td>❌</td><td>Aging, ≤$70</td></tr>
                             </tbody>
                         </table>
-                    </div>
-
-                    <div className="card" style={{padding:20,marginBottom:20}}>
-                        <h4 style={{margin:'0 0 12px',color:'var(--purple)'}}>⚠️ Insufficient Data → Supervisor Review</h4>
-                        <p style={{margin:'0 0 12px',lineHeight:1.6}}>
-                            Items are sent to supervisor review when:
-                        </p>
-                        <ul style={{margin:0,paddingLeft:20,lineHeight:1.8}}>
-                            <li>No <code>lowest_used</code> AND no <code>lowest_new</code> AND no <code>lowest_used_365</code> AND no <code>lowest_buy_box_used</code></li>
-                            <li>Keepa returns no data for the ASIN</li>
-                            <li>Employee flags the item manually</li>
-                        </ul>
-                    </div>
-
-                    <div className="card" style={{padding:20}}>
-                        <h4 style={{margin:'0 0 12px',color:'var(--text)'}}>📋 Data Fields Used</h4>
-                        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:20}}>
-                            <div>
-                                <div style={{fontWeight:600,marginBottom:8}}>Price Fields</div>
-                                <table style={{width:'100%',fontSize:12}}>
-                                    <tbody>
-                                        <tr><td style={{padding:'4px 0',color:'var(--text-dim)'}}>lowest_used</td><td>All-time lowest used price</td></tr>
-                                        <tr><td style={{padding:'4px 0',color:'var(--text-dim)'}}>lowest_used_365</td><td>365-day lowest used price</td></tr>
-                                        <tr><td style={{padding:'4px 0',color:'var(--text-dim)'}}>lowest_new</td><td>All-time lowest new price</td></tr>
-                                        <tr><td style={{padding:'4px 0',color:'var(--text-dim)'}}>lowest_buy_box_used</td><td>Lowest buy box used price</td></tr>
-                                        <tr><td style={{padding:'4px 0',color:'var(--text-dim)'}}>avg_used_365</td><td>365-day average used price</td></tr>
-                                    </tbody>
-                                </table>
-                            </div>
-                            <div>
-                                <div style={{fontWeight:600,marginBottom:8}}>Other Fields</div>
-                                <table style={{width:'100%',fontSize:12}}>
-                                    <tbody>
-                                        <tr><td style={{padding:'4px 0',color:'var(--text-dim)'}}>oos_90_used</td><td>90-day out of stock % (key metric!)</td></tr>
-                                        <tr><td style={{padding:'4px 0',color:'var(--text-dim)'}}>sales_rank</td><td>Current Amazon sales rank</td></tr>
-                                        <tr><td style={{padding:'4px 0',color:'var(--text-dim)'}}>avg_sales_rank</td><td>365-day average sales rank</td></tr>
-                                        <tr><td style={{padding:'4px 0',color:'var(--text-dim)'}}>offer_count_used</td><td>Current used offer count</td></tr>
-                                        <tr><td style={{padding:'4px 0',color:'var(--text-dim)'}}>offer_count_new</td><td>Current new offer count</td></tr>
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
                     </div>
                 </div>
             );
         }
 
         function App() {
-            const [tab, setTab] = useState('review');
+            const [tab, setTab] = useState('fringe');
             const [fringeFilter, setFringeFilter] = useState('has_suggested');
+            const [highPriceFilter, setHighPriceFilter] = useState('has_suggested');
+            const [hideRecentFringe, setHideRecentFringe] = useState(true);
+            const [hideRecentHighPrice, setHideRecentHighPrice] = useState(true);
             const [showConnection, setShowConnection] = useState(!CONFIG.SUPABASE_URL);
             const [showFlagModal, setShowFlagModal] = useState(false);
             const [flagAsin, setFlagAsin] = useState(null);
-            const [approveItem, setApproveItem] = useState(null);
             const [loading, setLoading] = useState(true);
             const [fringeCases, setFringeCases] = useState([]);
             const [reviews, setReviews] = useState([]);
@@ -1795,44 +699,46 @@
                     const cases = await supabase.query('fringe_cases', { select: '*, inventory(title, current_list_price, asin)', order: 'created_at.desc', filters: [{ col: 'status', val: 'eq.pending' }] });
                     const snapshots = await supabase.query('price_snapshots', { select: '*', order: 'snapshot_date.desc' });
                     const snapshotMap = {}; snapshots.forEach(s => { if (!snapshotMap[s.asin]) snapshotMap[s.asin] = s; });
-                    // Merge snapshots but keep fringe_cases id
-                    const enrichedCases = cases.map(c => {
-                        const snapshot = snapshotMap[c.asin] || {};
-                        // Remove snapshot id so we keep fringe_cases id
-                        const { id: snapshotId, ...snapshotData } = snapshot;
-                        return { ...snapshotData, ...c };
-                    });
+                    const enrichedCases = cases.map(c => { const snapshot = snapshotMap[c.asin] || {}; const { id: snapshotId, ...snapshotData } = snapshot; return { ...snapshotData, ...c }; });
                     const reviewsData = await supabase.query('manual_reviews', { order: 'created_at.desc' });
-                    const exportItemsData = await supabase.query('price_export_items', { select: 'id', order: 'exported_at.desc' });
                     setFringeCases(enrichedCases);
                     setReviews(reviewsData);
-                    setStats({ hasSuggested: enrichedCases.filter(c => c.suggested_price != null && !c.ready_to_export).length, needsKeepa: enrichedCases.filter(c => c.suggested_price == null).length, readyToExport: enrichedCases.filter(c => c.ready_to_export).length, supervisorQueue: reviewsData.filter(r => r.status === 'pending').length, totalExported: exportItemsData.length });
-                } catch (err) { console.error('Error loading data:', err); }
+                    
+                    const fringeItems = enrichedCases.filter(c => c.flag_reason === 'ultrapricer_fallback' && !isRecentlyExported(c.exported_at));
+                    const highPriceKeepaItems = enrichedCases.filter(c => c.flag_reason === 'high_price_keepa' && !isRecentlyExported(c.exported_at));
+                    const allKeepaItems = [...fringeItems, ...highPriceKeepaItems];
+                    const recentlyExportedItems = enrichedCases.filter(c => isRecentlyExported(c.exported_at));
+                    
+                    setStats({ 
+                        fringe: fringeItems.length,
+                        highPriceKeepa: highPriceKeepaItems.length,
+                        hasSuggested: allKeepaItems.filter(c => c.suggested_price != null && !c.ready_to_export).length, 
+                        readyToExport: allKeepaItems.filter(c => c.ready_to_export).length, 
+                        supervisorQueue: reviewsData.filter(r => r.status === 'pending').length, 
+                        recentlyExported: recentlyExportedItems.length
+                    });
+                } catch (err) { console.error('Error:', err); }
                 setLoading(false);
             }, []);
 
             useEffect(() => { loadData(); }, [loadData]);
 
             const handleSaveSettings = async (newSettings) => { await supabase.update('dashboard_settings', newSettings.id, { shipping_brackets: newSettings.shipping_brackets, min_profit: newSettings.min_profit, amazon_referral_fee: newSettings.amazon_referral_fee, amazon_fixed_fee: newSettings.amazon_fixed_fee, updated_at: new Date().toISOString() }); setSettings(newSettings); };
-            const handleApprovePrice = async (id, price, notes, readyToExport) => { 
-                console.log('Approving:', { id, price, notes, readyToExport });
-                const result = await supabase.update('fringe_cases', id, { approved_price: price, approval_notes: notes, ready_to_export: readyToExport, approved_at: new Date().toISOString() }); 
-                console.log('Update result:', result);
-                setApproveItem(null); 
-                loadData(); 
-            };
+            const handleApprovePrice = async (id, price, notes, readyToExport) => { await supabase.update('fringe_cases', id, { approved_price: price, approval_notes: notes, ready_to_export: readyToExport, approved_at: new Date().toISOString() }); loadData(); };
+            
             const handleExport = async (items) => {
                 try {
                     const [exportRecord] = await supabase.insert('price_exports', { item_count: items.length, exported_by: 'dashboard' });
                     if (!exportRecord) { alert('Failed to create export'); return; }
                     await supabase.insert('price_export_items', items.map(item => ({ export_id: exportRecord.id, asin: item.asin, old_price: item.old_price, new_price: item.new_price, source: 'fringe_review' })));
-                    for (const item of items) { await supabase.update('fringe_cases', item.id, { status: 'resolved', resolved_at: new Date().toISOString(), resolution_notes: `Exported @ $${item.new_price}` }); }
+                    for (const item of items) { await supabase.update('fringe_cases', item.id, { status: 'resolved', resolved_at: new Date().toISOString(), exported_at: new Date().toISOString(), resolution_notes: `Exported @ $${item.new_price}` }); }
                     const dateTag = exportDateTag();
                     const csvLines = ['ASIN,MIN,MAX,TAGS']; items.forEach(item => { csvLines.push(`="${item.asin}",,${item.new_price.toFixed(2)},${dateTag}`); });
                     const blob = new Blob([csvLines.join('\n')], { type: 'text/csv' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `price_export_${dateTag}.csv`; a.click(); URL.revokeObjectURL(url);
                     loadData();
                 } catch (err) { console.error('Export error:', err); alert('Export failed: ' + err.message); }
             };
+            
             const handleFlagForReview = async (data) => { await supabase.insert('manual_reviews', { asin: data.asin, reason: data.reason, details: data.details, flagged_by: data.flagged_by, status: 'pending' }); loadData(); };
             const handleResolveReview = async (id, status, notes, reviewedBy, exportPrice) => {
                 await supabase.update('manual_reviews', id, { status, review_notes: notes, reviewed_by: reviewedBy, reviewed_at: new Date().toISOString() });
@@ -1840,7 +746,7 @@
                     const review = reviews.find(r => r.id === id);
                     if (review) {
                         const existingCases = await supabase.query('fringe_cases', { filters: [{ col: 'asin', val: `eq.${review.asin}` }] });
-                        if (existingCases.length > 0) { await supabase.update('fringe_cases', existingCases[0].id, { approved_price: exportPrice, ready_to_export: true, approved_at: new Date().toISOString(), approval_notes: notes }); }
+                        if (existingCases.length > 0) await supabase.update('fringe_cases', existingCases[0].id, { approved_price: exportPrice, ready_to_export: true, approved_at: new Date().toISOString(), approval_notes: notes });
                     }
                 }
                 loadData();
@@ -1855,29 +761,29 @@
                     </header>
                     <main style={{padding:24,maxWidth:1400,margin:'0 auto'}}>
                         {!CONFIG.SUPABASE_URL ? (
-                            <div className="card" style={{padding:40,textAlign:'center'}}><h2 style={{marginBottom:12}}>Welcome to Pricing Dashboard</h2><p style={{color:'var(--text-dim)',marginBottom:20}}>Connect your Supabase database to get started.</p><button className="btn-primary" onClick={() => setShowConnection(true)}>Configure Connection</button></div>
+                            <div className="card" style={{padding:40,textAlign:'center'}}><h2 style={{marginBottom:12}}>Welcome</h2><p style={{color:'var(--text-dim)',marginBottom:20}}>Connect your database to get started.</p><button className="btn-primary" onClick={() => setShowConnection(true)}>Configure</button></div>
                         ) : (
                             <>
                                 <StatsRow stats={stats} />
                                 <div style={{display:'flex',borderBottom:'1px solid var(--border)',marginBottom:20,flexWrap:'wrap'}}>
-                                    <div className={`tab ${tab === 'review' ? 'active' : ''}`} onClick={() => setTab('review')}>📋 Fringe</div>
+                                    <div className={`tab ${tab === 'fringe' ? 'active' : ''}`} onClick={() => setTab('fringe')}>⚠️ Fringe</div>
+                                    <div className={`tab ${tab === 'high_price_keepa' ? 'active' : ''}`} onClick={() => setTab('high_price_keepa')}>💰 High Price Keepa</div>
                                     <div className={`tab ${tab === 'high_rank' ? 'active' : ''}`} onClick={() => setTab('high_rank')}>📈 High Rank</div>
-                                    <div className={`tab ${tab === 'high_price' ? 'active' : ''}`} onClick={() => setTab('high_price')}>💰 High Price</div>
+                                    <div className={`tab ${tab === 'high_price' ? 'active' : ''}`} onClick={() => setTab('high_price')}>💵 High Price</div>
                                     <div className={`tab ${tab === 'export' ? 'active' : ''}`} onClick={() => setTab('export')}>🚀 Export{stats.readyToExport > 0 && <span className="badge badge-green" style={{marginLeft:8}}>{stats.readyToExport}</span>}</div>
                                     <div className={`tab ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>📦 History</div>
-                                    <div className={`tab ${tab === 'sales' ? 'active' : ''}`} onClick={() => setTab('sales')}>📊 Sales</div>
                                     <div className={`tab ${tab === 'supervisor' ? 'active' : ''}`} onClick={() => setTab('supervisor')}>👔 Supervisor{stats.supervisorQueue > 0 && <span className="badge badge-purple" style={{marginLeft:8}}>{stats.supervisorQueue}</span>}</div>
                                     <div className={`tab ${tab === 'logic' ? 'active' : ''}`} onClick={() => setTab('logic')}>📖 Logic</div>
                                     <div className={`tab ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>⚙️ Settings</div>
                                 </div>
                                 {loading ? <div style={{textAlign:'center',padding:60,color:'var(--text-dim)'}}>Loading...</div> : (
                                     <>
-                                        {tab === 'review' && <FringeCasesTable cases={fringeCases} filter={fringeFilter} onFilterChange={setFringeFilter} onApprove={handleApprovePrice} onFlag={openFlagModal} onRefresh={loadData} settings={settings} />}
+                                        {tab === 'fringe' && <PricingTable cases={fringeCases} tabType="fringe" filter={fringeFilter} onFilterChange={setFringeFilter} onApprove={handleApprovePrice} onFlag={openFlagModal} onRefresh={loadData} settings={settings} hideRecent={hideRecentFringe} onToggleHideRecent={() => setHideRecentFringe(!hideRecentFringe)} />}
+                                        {tab === 'high_price_keepa' && <PricingTable cases={fringeCases} tabType="high_price_keepa" filter={highPriceFilter} onFilterChange={setHighPriceFilter} onApprove={handleApprovePrice} onFlag={openFlagModal} onRefresh={loadData} settings={settings} hideRecent={hideRecentHighPrice} onToggleHideRecent={() => setHideRecentHighPrice(!hideRecentHighPrice)} />}
                                         {tab === 'high_rank' && <AgingReviewTab reviewType="high_rank" settings={settings} onRefresh={loadData} />}
                                         {tab === 'high_price' && <AgingReviewTab reviewType="high_price" settings={settings} onRefresh={loadData} />}
                                         {tab === 'export' && <ExportTab cases={fringeCases} onExport={handleExport} onRefresh={loadData} />}
                                         {tab === 'history' && <ExportHistoryTab onRefresh={loadData} />}
-                                        {tab === 'sales' && <SalesTrackingTab onRefresh={loadData} />}
                                         {tab === 'supervisor' && <SupervisorReviewTab reviews={reviews} onResolve={handleResolveReview} onRefresh={loadData} settings={settings} />}
                                         {tab === 'logic' && <PricingLogicTab settings={settings} />}
                                         {tab === 'settings' && <SettingsTab settings={settings} onSave={handleSaveSettings} />}
@@ -1888,7 +794,6 @@
                     </main>
                     <ConnectionModal isOpen={showConnection} onClose={() => setShowConnection(false)} />
                     <FlagForReviewModal isOpen={showFlagModal} onClose={() => setShowFlagModal(false)} asin={flagAsin} onSubmit={handleFlagForReview} />
-                    <ApprovePriceModal isOpen={!!approveItem} item={approveItem} onClose={() => setApproveItem(null)} onApprove={handleApprovePrice} />
                 </div>
             );
         }
