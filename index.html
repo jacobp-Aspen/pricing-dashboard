@@ -45,6 +45,7 @@
         .stat-label { font-size: 11px; color: var(--text-dim); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
         .checkbox { width: 16px; height: 16px; cursor: pointer; accent-color: var(--blue); }
         .settings-input { width: 100px; padding: 6px 10px; font-size: 13px; text-align: right; }
+        .filter-input { width: 80px; padding: 4px 8px; font-size: 12px; text-align: right; }
         .toggle { position: relative; width: 40px; height: 22px; background: var(--bg-hover); border-radius: 11px; cursor: pointer; transition: background 0.2s; border: 1px solid var(--border); }
         .toggle.active { background: var(--blue); border-color: var(--blue); }
         .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: white; border-radius: 50%; transition: transform 0.2s; }
@@ -71,8 +72,7 @@
                     const res = await fetch(url, { headers: { 'apikey': CONFIG.SUPABASE_KEY, 'Authorization': `Bearer ${CONFIG.SUPABASE_KEY}` } });
                     return res.ok ? res.json() : [];
                 }
-                let allData = [];
-                let offset = 0;
+                let allData = [], offset = 0;
                 const pageSize = 1000;
                 while (true) {
                     const params = new URLSearchParams(baseParams);
@@ -108,8 +108,8 @@
         };
 
         const fmt = (val) => val != null ? `$${Number(val).toFixed(2)}` : '—';
+        const fmtRank = (val) => val != null ? val.toLocaleString() : '—';
         const exportDateTag = () => { const d = new Date(); return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`; };
-        
         const isRecentlyExported = (exportedAt) => {
             if (!exportedAt) return false;
             const exportDate = new Date(exportedAt);
@@ -122,7 +122,6 @@
             if (!data) return <span style={{color:'var(--text-dim)'}}>No Keepa data available</span>;
             const priceFields = [
                 { key: 'current_used', label: 'Current Used' }, { key: 'current_new', label: 'Current New' },
-                { key: 'current_amazon', label: 'Amazon Price' }, { key: 'current_ebay_used', label: 'eBay Used' },
                 { key: 'avg_used_180', label: 'Avg Used (180d)' }, { key: 'avg_used_90', label: 'Avg Used (90d)' },
                 { key: 'lowest_used', label: 'Lowest Used' }, { key: 'lowest_new', label: 'Lowest New' },
             ];
@@ -203,6 +202,9 @@
             const [selectedIds, setSelectedIds] = useState(new Set());
             const [page, setPage] = useState(0);
             const [selectedKeepa, setSelectedKeepa] = useState(null);
+            const [minPrice, setMinPrice] = useState('');
+            const [maxPrice, setMaxPrice] = useState('');
+            const [maxRank, setMaxRank] = useState('');
             const pageSize = 50;
             
             const reasonLabels = { 
@@ -220,6 +222,20 @@
                 if (hideRecent) {
                     result = result.filter(c => !isRecentlyExported(c.exported_at));
                 }
+                // Price filters
+                if (minPrice) {
+                    const min = parseFloat(minPrice);
+                    result = result.filter(c => (c.suggested_price || c.inventory?.current_list_price || 0) >= min);
+                }
+                if (maxPrice) {
+                    const max = parseFloat(maxPrice);
+                    result = result.filter(c => (c.suggested_price || c.inventory?.current_list_price || 0) <= max);
+                }
+                // Rank filter (from snapshot data)
+                if (maxRank) {
+                    const max = parseFloat(maxRank);
+                    result = result.filter(c => c.amazon_sales_rank && c.amazon_sales_rank <= max);
+                }
                 switch (filter) {
                     case 'has_suggested': return result.filter(c => c.suggested_price != null && !c.ready_to_export);
                     case 'needs_keepa': return result.filter(c => c.suggested_price == null);
@@ -230,7 +246,7 @@
                     );
                     default: return result;
                 }
-            }, [cases, tabType, filter, hideRecent]);
+            }, [cases, tabType, filter, hideRecent, minPrice, maxPrice, maxRank]);
             
             const totalPages = Math.ceil(filteredCases.length / pageSize);
             const pagedCases = filteredCases.slice(page * pageSize, (page + 1) * pageSize);
@@ -282,7 +298,7 @@
                 setSelectedIds(new Set()); setEditedPrices({});
             };
             
-            useEffect(() => { setPage(0); setSelectedIds(new Set()); }, [filter, tabType]);
+            useEffect(() => { setPage(0); setSelectedIds(new Set()); }, [filter, tabType, minPrice, maxPrice, maxRank]);
             
             const loadKeepaData = async (c) => {
                 const snapshot = await supabase.query('price_snapshots', { filters: [{ col: 'asin', val: `eq.${c.asin}` }], order: 'snapshot_date.desc', limit: 1 });
@@ -300,7 +316,7 @@
             return (
                 <div className="card" style={{overflow:'hidden'}}>
                     <div style={{padding:16,borderBottom:'1px solid var(--border)',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
-                        <select value={filter} onChange={e => onFilterChange(e.target.value)} style={{minWidth:220}}>
+                        <select value={filter} onChange={e => onFilterChange(e.target.value)} style={{minWidth:200}}>
                             <option value="all">All ({counts.all})</option>
                             <option value="has_suggested">✓ Has Suggested ({counts.has_suggested})</option>
                             <option value="needs_keepa">✗ Needs Keepa ({counts.needs_keepa})</option>
@@ -313,28 +329,41 @@
                             <div className={`toggle ${hideRecent ? 'active' : ''}`} onClick={onToggleHideRecent}></div>
                         </div>
                         
-                        <span style={{fontSize:13,color:'var(--text-dim)'}}>{selectedIds.size} selected</span>
+                        <div style={{display:'flex',alignItems:'center',gap:4}}>
+                            <span style={{fontSize:11,color:'var(--text-dim)'}}>$</span>
+                            <input type="number" className="filter-input mono" placeholder="Min" value={minPrice} onChange={e => setMinPrice(e.target.value)} />
+                            <span style={{fontSize:11,color:'var(--text-dim)'}}>-</span>
+                            <input type="number" className="filter-input mono" placeholder="Max" value={maxPrice} onChange={e => setMaxPrice(e.target.value)} />
+                        </div>
                         
+                        <div style={{display:'flex',alignItems:'center',gap:4}}>
+                            <span style={{fontSize:11,color:'var(--text-dim)'}}>Rank ≤</span>
+                            <input type="number" className="filter-input mono" placeholder="e.g. 500000" value={maxRank} onChange={e => setMaxRank(e.target.value)} style={{width:100}} />
+                        </div>
+                        
+                        <span style={{fontSize:12,color:'var(--text-dim)'}}>{filteredCases.length} items</span>
+                    </div>
+                    
+                    <div style={{padding:12,borderBottom:'1px solid var(--border)',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+                        <span style={{fontSize:13,color:'var(--text-dim)'}}>{selectedIds.size} selected</span>
                         <button className="btn-success btn-small" onClick={handleBatchApprove} disabled={selectedIds.size === 0} style={{opacity: selectedIds.size === 0 ? 0.5 : 1}}>
                             ✓ Approve ({selectedIds.size})
                         </button>
-                        
                         <div style={{flex:1}}></div>
-                        
                         <div style={{display:'flex',alignItems:'center',gap:8}}>
                             <button className="btn-secondary btn-small" onClick={() => setPage(p => Math.max(0, p-1))} disabled={page === 0}>←</button>
                             <span style={{fontSize:12,color:'var(--text-dim)'}}>Page {page + 1} of {totalPages || 1}</span>
                             <button className="btn-secondary btn-small" onClick={() => setPage(p => Math.min(totalPages - 1, p+1))} disabled={page >= totalPages - 1}>→</button>
                         </div>
-                        
                         <button className="btn-secondary" onClick={onRefresh}>↻ Refresh</button>
                     </div>
-                    <div style={{overflowX:'auto',maxHeight:'60vh',overflowY:'auto'}}>
+                    
+                    <div style={{overflowX:'auto',maxHeight:'55vh',overflowY:'auto'}}>
                         <table>
                             <thead style={{position:'sticky',top:0,background:'var(--bg-card)',zIndex:1}}>
                                 <tr>
                                     <th style={{width:40}}><input type="checkbox" className="checkbox" checked={selectedIds.size === pagedCases.length && pagedCases.length > 0} onChange={toggleSelectAll} /></th>
-                                    <th>ASIN</th><th>Title</th><th>Type</th><th>Current</th><th>Floor</th><th>Suggested</th><th style={{width:100}}>New Price</th><th style={{width:80}}>Actions</th>
+                                    <th>ASIN</th><th>Title</th><th>Rank</th><th>Current</th><th>Suggested</th><th style={{width:100}}>New Price</th><th style={{width:80}}>Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -350,14 +379,8 @@
                                                 <a href={`http://lkdev.com/a.php?a=${c.asin}`} target="_blank" rel="noopener noreferrer" style={{color:'var(--blue)',textDecoration:'none'}}>{c.asin}</a>
                                             </td>
                                             <td style={{maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:12}}>{c.inventory?.title || '—'}</td>
-                                            <td>
-                                                <span className={`badge ${c.flag_reason === 'ultrapricer_fallback' ? 'badge-orange' : 'badge-cyan'}`}>
-                                                    {reasonLabels[c.flag_reason] || c.flag_reason}
-                                                </span>
-                                                {wasExported && <span className="badge badge-blue" style={{marginLeft:4}}>Exported</span>}
-                                            </td>
+                                            <td className="mono" style={{fontSize:11,color: c.amazon_sales_rank > 1000000 ? 'var(--red)' : c.amazon_sales_rank > 500000 ? 'var(--yellow)' : 'var(--green)'}}>{fmtRank(c.amazon_sales_rank)}</td>
                                             <td className="mono" style={{fontSize:12,color:'var(--orange)'}}>{fmt(c.inventory?.current_list_price)}</td>
-                                            <td className="mono" style={{fontSize:12,color:'var(--yellow)'}}>{fmt(c.floor_price)}</td>
                                             <td>
                                                 {c.suggested_price ? (
                                                     <span className="mono" style={{fontSize:12,color:'var(--green)',cursor:'pointer',textDecoration:'underline'}} onClick={() => loadKeepaData(c)} title="Click to view Keepa data">
@@ -384,7 +407,7 @@
                                         </tr>
                                     );
                                 })}
-                                {pagedCases.length === 0 && <tr><td colSpan={9} style={{textAlign:'center',padding:40,color:'var(--text-dim)'}}>No items found</td></tr>}
+                                {pagedCases.length === 0 && <tr><td colSpan={8} style={{textAlign:'center',padding:40,color:'var(--text-dim)'}}>No items found</td></tr>}
                             </tbody>
                         </table>
                     </div>
@@ -532,6 +555,10 @@
             const [loading, setLoading] = useState(true);
             const [statusFilter, setStatusFilter] = useState('pending');
             const [hideRecent, setHideRecent] = useState(true);
+            const [minPrice, setMinPrice] = useState('');
+            const [maxPrice, setMaxPrice] = useState('');
+            const [maxRank, setMaxRank] = useState('');
+            const [minAge, setMinAge] = useState('');
             
             const title = reviewType === 'high_rank' ? '📈 High Rank Items' : '💵 High Price Items';
             const description = reviewType === 'high_rank' ? 'Rank > 1.8M, shelf 20+ days (≤$70)' : 'Shelf 45/70/100+ days (≤$70)';
@@ -549,8 +576,12 @@
                 let result = reviews;
                 if (hideRecent) result = result.filter(r => !isRecentlyExported(r.exported_at));
                 if (statusFilter !== 'all') result = result.filter(r => r.status === statusFilter);
+                if (minPrice) result = result.filter(r => r.current_price >= parseFloat(minPrice));
+                if (maxPrice) result = result.filter(r => r.current_price <= parseFloat(maxPrice));
+                if (maxRank) result = result.filter(r => r.sales_rank && r.sales_rank <= parseFloat(maxRank));
+                if (minAge) result = result.filter(r => r.age_days >= parseFloat(minAge));
                 return result;
-            }, [reviews, statusFilter, hideRecent]);
+            }, [reviews, statusFilter, hideRecent, minPrice, maxPrice, maxRank, minAge]);
             
             const recentCount = reviews.filter(r => isRecentlyExported(r.exported_at)).length;
             
@@ -561,7 +592,7 @@
                     <div style={{marginBottom:20}}><h3 style={{margin:'0 0 8px',fontSize:16}}>{title}</h3><p style={{margin:0,fontSize:12,color:'var(--text-dim)'}}>{description}</p></div>
                     
                     <div style={{display:'flex',gap:12,alignItems:'center',marginBottom:16,flexWrap:'wrap'}}>
-                        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={{minWidth:180}}>
+                        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={{minWidth:150}}>
                             <option value="pending">Pending ({reviews.filter(r => r.status === 'pending').length})</option>
                             <option value="all">All ({reviews.length})</option>
                         </select>
@@ -569,35 +600,54 @@
                         <div style={{display:'flex',alignItems:'center',gap:8}}>
                             <span style={{fontSize:12,color:'var(--text-dim)'}}>Hide exported (30d)</span>
                             <div className={`toggle ${hideRecent ? 'active' : ''}`} onClick={() => setHideRecent(!hideRecent)}></div>
-                            {recentCount > 0 && <span style={{fontSize:11,color:'var(--text-dim)'}}>({recentCount} hidden)</span>}
                         </div>
                         
-                        <div style={{flex:1}}></div>
+                        <div style={{display:'flex',alignItems:'center',gap:4}}>
+                            <span style={{fontSize:11,color:'var(--text-dim)'}}>$</span>
+                            <input type="number" className="filter-input mono" placeholder="Min" value={minPrice} onChange={e => setMinPrice(e.target.value)} />
+                            <span style={{fontSize:11,color:'var(--text-dim)'}}>-</span>
+                            <input type="number" className="filter-input mono" placeholder="Max" value={maxPrice} onChange={e => setMaxPrice(e.target.value)} />
+                        </div>
                         
+                        <div style={{display:'flex',alignItems:'center',gap:4}}>
+                            <span style={{fontSize:11,color:'var(--text-dim)'}}>Rank ≤</span>
+                            <input type="number" className="filter-input mono" placeholder="e.g. 500000" value={maxRank} onChange={e => setMaxRank(e.target.value)} style={{width:100}} />
+                        </div>
+                        
+                        <div style={{display:'flex',alignItems:'center',gap:4}}>
+                            <span style={{fontSize:11,color:'var(--text-dim)'}}>Age ≥</span>
+                            <input type="number" className="filter-input mono" placeholder="days" value={minAge} onChange={e => setMinAge(e.target.value)} style={{width:60}} />
+                        </div>
+                        
+                        <span style={{fontSize:12,color:'var(--text-dim)'}}>{filteredReviews.length} items</span>
+                    </div>
+                    
+                    <div style={{display:'flex',gap:12,alignItems:'center',marginBottom:16}}>
                         <div style={{display:'flex',alignItems:'center',gap:8}}>
                             <span style={{fontSize:12,color:'var(--text-dim)'}}>Profit Reduction:</span>
                             <input type="number" className="mono" style={{width:60,padding:'4px 8px',fontSize:12,textAlign:'right'}} value={profitReduction} onChange={e => setProfitReduction(parseFloat(e.target.value) || 0)} />
                             <span style={{fontSize:12,color:'var(--text-dim)'}}>%</span>
                         </div>
-                        
-                        <button className="btn-secondary" onClick={loadReviews}>↻</button>
+                        <div style={{flex:1}}></div>
+                        <button className="btn-secondary" onClick={loadReviews}>↻ Refresh</button>
                     </div>
                     
                     {filteredReviews.length === 0 ? <div style={{textAlign:'center',padding:40,color:'var(--text-dim)'}}>No items</div> : (
-                        <div style={{overflowX:'auto',maxHeight:'60vh',overflowY:'auto'}}>
+                        <div style={{overflowX:'auto',maxHeight:'50vh',overflowY:'auto'}}>
                             <table>
                                 <thead style={{position:'sticky',top:0,background:'var(--bg-card)'}}>
-                                    <tr><th style={{width:40}}><input type="checkbox" className="checkbox" /></th><th>ASIN</th><th>Title</th><th>Age</th><th>Current</th><th>Reduced</th><th style={{width:100}}>New</th><th>Actions</th></tr>
+                                    <tr><th style={{width:40}}><input type="checkbox" className="checkbox" /></th><th>ASIN</th><th>Title</th><th>Rank</th><th>Age</th><th>Current</th><th>Reduced</th><th style={{width:100}}>New</th><th>Actions</th></tr>
                                 </thead>
                                 <tbody>
-                                    {filteredReviews.slice(0, 50).map(r => {
+                                    {filteredReviews.slice(0, 100).map(r => {
                                         const reducedPrice = r.current_price * (1 - profitReduction / 100);
                                         const wasExported = isRecentlyExported(r.exported_at);
                                         return (
                                             <tr key={r.id} style={{opacity: wasExported ? 0.6 : 1}}>
                                                 <td><input type="checkbox" className="checkbox" /></td>
                                                 <td className="mono" style={{fontSize:11}}><a href={`http://lkdev.com/a.php?a=${r.asin}`} target="_blank" style={{color:'var(--blue)',textDecoration:'none'}}>{r.asin}</a></td>
-                                                <td style={{maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:12}}>{r.title || '—'}</td>
+                                                <td style={{maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:12}}>{r.title || '—'}</td>
+                                                <td className="mono" style={{fontSize:11,color: r.sales_rank > 1000000 ? 'var(--red)' : r.sales_rank > 500000 ? 'var(--yellow)' : 'var(--green)'}}>{fmtRank(r.sales_rank)}</td>
                                                 <td className="mono" style={{fontSize:12}}>{r.age_days}d</td>
                                                 <td className="mono" style={{fontSize:12}}>{fmt(r.current_price)}</td>
                                                 <td className="mono" style={{fontSize:12,color:'var(--yellow)'}}>{fmt(reducedPrice)}</td>
@@ -608,7 +658,7 @@
                                     })}
                                 </tbody>
                             </table>
-                            {filteredReviews.length > 50 && <div style={{padding:12,textAlign:'center',color:'var(--text-dim)',fontSize:12}}>Showing 50 of {filteredReviews.length}</div>}
+                            {filteredReviews.length > 100 && <div style={{padding:12,textAlign:'center',color:'var(--text-dim)',fontSize:12}}>Showing 100 of {filteredReviews.length}</div>}
                         </div>
                     )}
                 </div>
@@ -646,7 +696,7 @@
             return (
                 <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:24}}>
                     <div className="card" style={{padding:20}}>
-                        <h3 style={{margin:'0 0 16px',fontSize:16}}>📊 Pricing Priority (v4)</h3>
+                        <h3 style={{margin:'0 0 16px',fontSize:16}}>📊 Pricing Priority (v5)</h3>
                         <ol style={{margin:0,paddingLeft:20,fontSize:13,lineHeight:1.8}}>
                             <li><strong>180-day average</strong> - Most stable</li>
                             <li><strong>90-day average</strong> - Recent trend</li>
